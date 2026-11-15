@@ -1,0 +1,39 @@
+# Optional cloud-model broker for contained deployment.
+# Usage: docker compose -f docker-compose.contained.yml -f docker-compose.cloud-llm.yml up -d --build
+# Create secrets/openai_api_key with mode 0600; it must never be committed.
+services:
+  llm-broker:
+    build:
+      context: .
+      dockerfile: security/llm-broker/Dockerfile
+    environment:
+      ARTEX_BROKER_UPSTREAM: ${ARTEX_BROKER_UPSTREAM:-https://api.openai.com}
+      ARTEX_BROKER_CLIENT_TOKEN: ${ARTEX_BROKER_CLIENT_TOKEN:?Set random 24+ byte client token}
+    secrets:
+      - openai_api_key
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    pids_limit: 128
+    networks:
+      contained:
+        ipv4_address: ${ARTEX_BROKER_IP:-172.30.137.11}
+    restart: unless-stopped
+  network-guard:
+    environment:
+      ARTEX_BROKER_IP: ${ARTEX_BROKER_IP:-172.30.137.11}
+  artex:
+    depends_on:
+      llm-broker:
+        condition: service_started
+    extra_hosts:
+      - "postgres:${ARTEX_PG_IP:-172.30.137.10}"
+      - "llm-broker:${ARTEX_BROKER_IP:-172.30.137.11}"
+    environment:
+      ARTEX_LLM_PROVIDER: openai
+      ARTEX_LLM_BASE_URL: http://llm-broker:8899/v1
+      OPENAI_API_KEY: ${ARTEX_BROKER_CLIENT_TOKEN:?Set random 24+ byte client token}
+      ANTHROPIC_API_KEY: ""
+secrets:
+  openai_api_key:
+    file: ./secrets/openai_api_key

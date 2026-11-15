@@ -1,0 +1,15 @@
+name: contained-egress-integration
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  firewall:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify actual network namespace containment
+        run: bash scripts/test-egress-integration.sh

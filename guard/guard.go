@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/artex/securityprofile"
 	"github.com/Autumn-27/norma/hook"
 )
 
@@ -139,6 +140,23 @@ func (g *Guard) gateScope(ctx context.Context) (intercept.TargetScope, bool) {
 // rule or by the judge does not satisfy the gate; an ask and an unpinned target
 // share one approval request.
 func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event) hook.Result {
+	// This mandatory, fail-closed human approval is deliberately evaluated
+	// before user-configured interceptor rules (including any broad allow rule).
+	// It complements external network isolation; shell command text can be
+	// obfuscated and therefore cannot be the sole security boundary.
+	if reason, highImpact := securityprofile.HighImpactToolCall(ev.ToolName, ev.Input); highImpact {
+		if g.interceptor == nil || ctx.Err() != nil {
+			return g.block(ev.ToolName, systemBlockMessage("required operator approval unavailable: "+reason), "")
+		}
+		dec := intercept.Decision{
+			RuleName: "[Lyrisoft mandatory approval]",
+			Action: "ask", Message: "[model] human approval required: "+reason,
+			TimeoutEnabled: true, TimeoutSeconds: 300, TimeoutAction: "deny",
+		}
+		if !g.interceptor.HandleAsk(intercept.WithCall(ctx, ev.ToolName, ev.Input), intercept.ConvIDFromContext(ctx), dec, ev.ToolName, ev.Input) {
+			return g.block(ev.ToolName, systemBlockMessage("mandatory human approval denied or timed out: "+reason), "")
+		}
+	}
 	if g.targetOnly && g.interceptor != nil {
 		// The planner and the main agent run Bash too (#124, F11): the built-in
 		// deny rules apply to them, before the target gate. User rules and the

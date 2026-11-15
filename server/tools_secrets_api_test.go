@@ -223,6 +223,11 @@ func TestCustomToolExecMasking(t *testing.T) {
 
 // The platform tools follow the API: create refuses a placeholder, update keeps the stored value.
 func TestPlatformCustomToolPlaceholders(t *testing.T) {
+	// Confirm pentest mode denies agent-initiated platform mutations without
+	// creating any records, then exercise the legacy secret-placeholder behavior
+	// with the explicitly acknowledged advanced-lab profile.
+	t.Setenv("ARTEX_SECURITY_PROFILE", "pentest")
+	t.Setenv("ARTEX_ADVANCED_LAB_ACK", "")
 	s, _, _ := trafficEvidenceServer(t)
 	pg := s.m.PG()
 	t.Cleanup(func() { pg.Exec(`DELETE FROM tools WHERE key LIKE 't_secexec%'`) })
@@ -230,6 +235,14 @@ func TestPlatformCustomToolPlaceholders(t *testing.T) {
 		return json.RawMessage(`{"key":"t_secexec_pt","kind":"command","exec":` + exec + `}`)
 	}
 	create, update := s.toolCreateCustomTool(), s.toolUpdateCustomTool()
+	if res, _ := create.Call(context.Background(), in(`{"command":"echo","body":"pt-body-plain"}`), nil); !res.IsError {
+		t.Fatalf("pentest mode must deny agent-created executable tools: %s", res.Flatten())
+	}
+	if tl, err := pg.GetTool("t_secexec_pt"); err != nil || tl != nil {
+		t.Fatalf("pentest mode denial created a tool record: %v %v", tl, err)
+	}
+	t.Setenv("ARTEX_SECURITY_PROFILE", "advanced-lab")
+	t.Setenv("ARTEX_ADVANCED_LAB_ACK", "I_UNDERSTAND_ISOLATED_LAB_ONLY")
 	if res, _ := create.Call(context.Background(), in(`{"command":"echo","proxy":"__masked__"}`), nil); !res.IsError {
 		t.Fatalf("create with a placeholder must fail: %s", res.Flatten())
 	}
