@@ -40,8 +40,13 @@ watermarks are not one transaction, so restart can lose or repeat work; do not
 claim exactly-once delivery. Existing credentials and evidence are not team scoped. Task passwords are encrypted at rest,
 but `TaskCredentials` decrypts them and `taskCredentialOverview` includes them in
 agent context, which can reach the configured model provider. SDK default tools are
-not automatically removed by MCP/skill visibility. The program must close these
-paths before it claims isolation or enables new teams.
+not automatically removed by MCP/skill visibility. The original tool resolver
+also passed the original list through when the catalog query failed; this branch
+withholds that resolver input on error. This is only a partial mitigation: WebFetch,
+optional web search and SDK background tools are added after resolution, and MCP
+clients may already have started. Stop the entire run on policy-store failure and
+apply per-team call-time authorization before claiming a fail-closed tool boundary.
+The program must close all of these paths before it claims isolation or enables teams.
 
 Owner decisions before operational rollout (the proposed defaults below are
 engineering directions, not authorization):
@@ -285,6 +290,10 @@ is reviewed. A prior main-branch CI pass does not prove a new branch or runtime.
 - `go build -p 2 ./...` and `go vet -p 2 ./...` passed again after the resolver
   was added. The CI package list passed `go test -race -p 1 -count=1` with a fresh
   synthetic PostgreSQL database, including the re-enabled graph and approval tests.
+  After the catalog failure change, `go test -p 1 -count=1 -v ./server -run
+  '^TestWireTools'`, the same command with `-race`, and `go build -p 2 ./server`
+  passed: an unavailable catalog returned no resolver-input tools and a healthy
+  catalog retained its normal bindings. Later-injected SDK tools remain a known gap.
   `npm ci --ignore-scripts --no-audit --no-fund`, `tsc --noEmit` and
   `npm run build:static` passed using Node 24 and the environment's trusted proxy;
   CI uses Node 22. Network-guard (4 tests) and model-broker (3 tests) Python unit
@@ -292,8 +301,10 @@ is reviewed. A prior main-branch CI pass does not prove a new branch or runtime.
   and dual-stack fixture configurations; the supplied structural checkers passed.
 - `bash -n scripts/test-egress-integration.sh` passed. Actual execution reports
   `Docker is required for the synthetic egress integration test` (exit 127): this
-  environment has no Docker CLI/daemon. The source change replaces the old public
-  IPv6 probe with a controlled target and positive controls, but has not been run
-  against Docker. No browser/scanner container, live model connection, team runner,
-  per-team egress or end-to-end staged exercise has been verified. No deployment or
-  agent activation is authorized by these results.
+  environment has no Docker CLI/daemon. GitHub Actions [run 43707740351](https://github.com/lyrisoft/artex-hardened/actions/runs/43707740351)
+  on draft PR #9 commit `8be7bf97` ran the revised script successfully: positive
+  controls reached the synthetic targets, the allowed IPv4 target was reachable
+  through the guard, and the other IPv4/IPv6 targets were blocked. This tests one
+  guarded network namespace, not team isolation. No browser/scanner container,
+  live model connection, team runner, per-team egress or end-to-end staged exercise
+  has been verified. No deployment or agent activation is authorized by these results.

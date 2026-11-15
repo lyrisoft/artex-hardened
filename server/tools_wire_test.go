@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	actool "github.com/Autumn-27/norma/tool"
 )
 
 func names(tools []actool.CoreTool) map[string]actool.CoreTool {
@@ -16,6 +16,36 @@ func names(tools []actool.CoreTool) map[string]actool.CoreTool {
 		m[t.Name()] = t
 	}
 	return m
+}
+
+// A failed catalog lookup must not return the resolver's SDK-default or
+// unknown input tools. This alone does not gate tools injected later by the SDK.
+func TestWireToolsWithholdsToolsWhenCatalogUnavailable(t *testing.T) {
+	dsn, _, err := db.DSN()
+	if err != nil {
+		t.Skipf("no database config (%v)", err)
+	}
+	pg, err := db.Open(dsn)
+	if err != nil {
+		t.Fatalf("open synthetic database: %v", err)
+	}
+	previousResolve := agent.ToolResolve()
+	previousPolicy := agent.FindingTrafficBindingEnabled()
+	t.Cleanup(func() {
+		agent.SetToolResolve(previousResolve)
+		agent.SetFindingTrafficBindingEnabled(previousPolicy)
+	})
+	wireTools(pg, nil)
+	base := actool.DefaultTools()
+	if len(base) == 0 {
+		t.Fatal("fixture must contain SDK default tools")
+	}
+	if err := pg.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.ToolResolve()(context.Background(), "worker", base); len(got) != 0 {
+		t.Fatalf("catalog failure exposed %d tools", len(got))
+	}
 }
 
 // TestWireTools verifies end-to-end against the live dev PG: wireTools seeds the

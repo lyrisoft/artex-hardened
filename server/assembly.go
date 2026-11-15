@@ -251,8 +251,10 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 	agent.SetToolResolve(func(ctx context.Context, agentKey string, tools []actool.CoreTool) []actool.CoreTool {
 		rows, err := pg.ListTools()
 		if err != nil {
-			log.Printf("[tools] failed to read tools table, passing through with code defaults: %v", err)
-			return tools
+			// The catalog carries enabled flags and agent bindings. Returning the
+			// original list here would turn a policy-store outage into permission.
+			log.Printf("[tools] failed to read tools table; withholding resolver input: %v", err)
+			return nil
 		}
 		byKey := make(map[string]*db.Tool, len(rows))
 		for _, t := range rows {
