@@ -1,0 +1,28 @@
+name: security-profiles
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test profile behavior
+        run: go test ./securityprofile
+      - name: Verify complete backend still compiles
+        run: go build ./server ./agent ./cmd/artex
+      - name: Validate isolated Compose overlay
+        env:
+          POSTGRES_PASSWORD: ci-not-a-real-secret
+          ARTEX_ADVANCED_LAB_ACK: I_UNDERSTAND_ISOLATED_LAB_ONLY
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.isolated.yml config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.isolated.yml config --format json | python3 -c 'import json,sys; d=json.load(sys.stdin); s=d["services"]; assert "artex_lab" in s["artex"]["networks"]; assert "artex_lab" in s["postgres"]["networks"]; assert d["networks"]["artex_lab"]["internal"] is True'
