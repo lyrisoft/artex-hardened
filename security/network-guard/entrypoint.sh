@@ -18,16 +18,16 @@ for p in parts:
         raise SystemExit("Invalid destination range: "+p)
 print("Validated explicit destination allowlist")
 PY
-# Resolve the datastore through the container-internal resolver before blocking DNS.
-PG_IP="$(getent ahostsv4 postgres | awk 'NR==1{print $1}')"
+# Database IP is pinned in Compose. Do not enable Docker DNS simply to resolve PostgreSQL.
+PG_IP="${ARTEX_PG_IP:?Set pinned ARTEX_PG_IP}"
 test -n "$PG_IP"
 # Install fail-closed rules (avoid a window with unrestricted OUTPUT).
 iptables -P OUTPUT DROP
 ip6tables -P OUTPUT DROP
 iptables -F OUTPUT
 ip6tables -F OUTPUT
-iptables -A OUTPUT -o lo -j ACCEPT
-ip6tables -A OUTPUT -o lo -j ACCEPT
+iptables -A OUTPUT -o lo -d 127.0.0.1/32 -j ACCEPT
+ip6tables -A OUTPUT -o lo -d ::1/128 -j ACCEPT
 iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 ip6tables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 iptables -A OUTPUT -d "$PG_IP/32" -p tcp --dport 5432 -j ACCEPT

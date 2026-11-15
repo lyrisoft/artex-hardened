@@ -11,7 +11,8 @@ services:
     volumes:
       - artex_pgdata:/var/lib/postgresql/data
     networks:
-      - contained
+      contained:
+        ipv4_address: ${ARTEX_PG_IP:-172.30.137.10}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-artex} -d ${POSTGRES_DB:-artex}"]
       interval: 5s
@@ -25,6 +26,7 @@ services:
     security_opt: ["no-new-privileges:true"]
     environment:
       ARTEX_TARGET_CIDRS: ${ARTEX_TARGET_CIDRS:?Set approved IPv4 CIDRs}
+      ARTEX_PG_IP: ${ARTEX_PG_IP:-172.30.137.10}
       ARTEX_ALLOW_DNS: ${ARTEX_ALLOW_DNS:-0}
     networks: [contained]
     depends_on:
@@ -43,6 +45,8 @@ services:
       context: .
     image: artex-hardened:local
     network_mode: "service:network-guard"
+    extra_hosts:
+      - "postgres:${ARTEX_PG_IP:-172.30.137.10}"
     depends_on:
       network-guard:
         condition: service_healthy
@@ -70,5 +74,8 @@ services:
 networks:
   contained:
     driver: bridge
+    ipam:
+      config:
+        - subnet: ${ARTEX_LAB_SUBNET:-172.30.137.0/24}
 volumes:
   artex_pgdata:

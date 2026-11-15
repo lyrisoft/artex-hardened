@@ -16,6 +16,8 @@ class GuardConfig(unittest.TestCase):
         self.assertIn('127.0.0.1:8787:8787', self.c)
     def test_default_deny(self):
         self.assertIn('iptables -P OUTPUT DROP', self.s)
+        self.assertIn('127.0.0.1/32', self.s)
+        self.assertIn('ARTEX_PG_IP:?',self.s)
         self.assertIn('ip6tables -P OUTPUT DROP', self.s)
         self.assertIn('ARTEX_TARGET_CIDRS:?', self.s)
         self.assertIn('exec tail -f /dev/null',self.s)
