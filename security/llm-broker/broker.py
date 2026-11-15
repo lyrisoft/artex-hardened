@@ -79,7 +79,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Connection","close")
             self.end_headers()
             while True:
-                chunk = res.read(16384)
+                # read() can wait for the full buffer or EOF, delaying small
+                # streaming events. read1() forwards currently available bytes.
+                chunk = res.read1(16384)
                 if not chunk: break
                 self.wfile.write(chunk)
                 self.wfile.flush()

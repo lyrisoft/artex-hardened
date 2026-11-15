@@ -296,9 +296,19 @@ is reviewed. A prior main-branch CI pass does not prove a new branch or runtime.
   catalog retained its normal bindings. Later-injected SDK tools remain a known gap.
   `npm ci --ignore-scripts --no-audit --no-fund`, `tsc --noEmit` and
   `npm run build:static` passed using Node 24 and the environment's trusted proxy;
-  CI uses Node 22. Network-guard (4 tests) and model-broker (3 tests) Python unit
-  suites passed. Compose v5.7.1 rendered the base, isolated, contained, model-broker
-  and dual-stack fixture configurations; the supplied structural checkers passed.
+  CI uses Node 22. Network-guard (4 tests) and model-broker (7 tests) Python suites
+  passed. The broker's loopback-only TLS fixture uses generated certificates and
+  dummy credentials; it checks request denial, credential substitution, untrusted
+  certificate rejection, and incremental chunked/unchunked streaming. It exposed
+  buffering in `read`, fixed by using `read1`; no real provider was contacted.
+  Compose v5.7.1 rendered the base, isolated, contained, model-broker and dual-stack
+  fixture configurations; the supplied structural checkers passed.
+- GitHub Actions [run 43708361299](https://github.com/lyrisoft/artex-hardened/actions/runs/43708361299)
+  failed `TestEveryAgentKindCarriesTargetScope`: a manually constructed test server
+  inherited a previous test's closed database resolver. The fixture now installs its
+  own live resolver; the policy-store outage behavior remains fail closed for that
+  resolver's inputs. `go test -p 1 -count=1 ./server` and the same command with
+  `-race` passed afterward against separate fresh synthetic databases.
 - `bash -n scripts/test-egress-integration.sh` passed. Actual execution reports
   `Docker is required for the synthetic egress integration test` (exit 127): this
   environment has no Docker CLI/daemon. GitHub Actions [run 43707740351](https://github.com/lyrisoft/artex-hardened/actions/runs/43707740351)

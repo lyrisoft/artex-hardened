@@ -164,6 +164,15 @@ func newTargetScopeFixture(t *testing.T) *targetScopeFixture {
 		cancel()
 		_ = m.Close()
 	})
+	// This fixture builds a Server without New, so install a resolver backed by
+	// its own live database instead of inheriting a previous test's closed DB.
+	previousResolve := agent.ToolResolve()
+	previousPolicy := agent.FindingTrafficBindingEnabled()
+	wireTools(m.pg, nil)
+	t.Cleanup(func() {
+		agent.SetToolResolve(previousResolve)
+		agent.SetFindingTrafficBindingEnabled(previousPolicy)
+	})
 	return &targetScopeFixture{m: m, e: e, s: s}
 }
 
