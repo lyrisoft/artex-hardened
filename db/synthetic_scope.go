@@ -1,11 +1,11 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -26,18 +26,20 @@ type SyntheticScope struct {
 // "synthetic" is only a classification asserted by the author; this storage
 // method does not prove that an address, account or data source is synthetic.
 func (d *DB) ProposeSyntheticScope(ctx context.Context, requesterID, workspaceID, taskID int64, document []byte, from, until time.Time) (int64, error) {
-	if d == nil || d.DB == nil || requesterID <= 0 || workspaceID <= 0 || taskID <= 0 || len(document) < 2 || len(document) > 65536 || !until.After(from) || !json.Valid(document) {
+	if d == nil || d.DB == nil || requesterID <= 0 || workspaceID <= 0 || taskID <= 0 || len(document) < 2 || len(document) > 65536 || !until.After(from) {
 		return 0, ErrWorkspaceAccessDenied
 	}
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(document, &object); err != nil || object == nil || len(object) == 0 {
+	// Validate, hash and persist the same snapshot rather than retaining a slice
+	// owned by the caller. This does not validate target or method semantics.
+	document = bytes.Clone(document)
+	if !validSyntheticScopeDocument(document) {
 		return 0, ErrWorkspaceAccessDenied
 	}
 	digest := sha256.Sum256(document)
 	var id int64
 	err := d.QueryRowContext(ctx, `
-INSERT INTO security_scope_proposals(workspace_id,task_id,requester_id,document,document_sha256,valid_from,valid_until)
-SELECT w.id,t.id,p.id,$4,$5,$6,$7
+INSERT INTO security_scope_proposals(workspace_id,task_id,requester_id,document,document_sha256,valid_from,valid_until,requester_membership_id)
+SELECT w.id,t.id,p.id,$4,$5,$6,$7,m.id
 FROM security_workspaces w
 JOIN security_teams team ON team.id=w.team_id AND team.tenant_id=w.tenant_id AND team.enabled
 JOIN security_tenants tenant ON tenant.id=w.tenant_id AND tenant.enabled
@@ -64,10 +66,15 @@ func (d *DB) ApproveSyntheticScope(ctx context.Context, approverID, proposalID i
 	if d == nil || d.DB == nil || approverID <= 0 || proposalID <= 0 {
 		return ErrWorkspaceAccessDenied
 	}
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("approve synthetic scope: %w", err)
+	}
+	defer tx.Rollback()
 	var id int64
-	err := d.QueryRowContext(ctx, `
-INSERT INTO security_scope_approvals(proposal_id,approver_id)
-SELECT proposal.id,p.id
+	err = tx.QueryRowContext(ctx, `
+INSERT INTO security_scope_approvals(proposal_id,approver_id,approver_membership_id)
+SELECT proposal.id,p.id,m.id
 FROM security_scope_proposals proposal
 JOIN security_workspaces w ON w.id=proposal.workspace_id AND w.enabled
 JOIN security_teams team ON team.id=w.team_id AND team.tenant_id=w.tenant_id AND team.enabled
@@ -75,6 +82,11 @@ JOIN security_tenants tenant ON tenant.id=w.tenant_id AND tenant.enabled
 JOIN security_team_memberships m ON m.team_id=team.id AND m.role='approver' AND m.revoked_at IS NULL
  AND m.valid_from <= statement_timestamp() AND (m.expires_at IS NULL OR m.expires_at > statement_timestamp())
 JOIN security_principals p ON p.id=m.principal_id AND p.kind='human' AND p.enabled
+JOIN security_principals requester ON requester.id=proposal.requester_id AND requester.kind='human' AND requester.enabled
+JOIN security_team_memberships requester_m ON requester_m.id=proposal.requester_membership_id
+ AND requester_m.team_id=team.id AND requester_m.principal_id=requester.id
+ AND requester_m.role IN ('operator','manager') AND requester_m.revoked_at IS NULL
+ AND requester_m.valid_from <= statement_timestamp() AND (requester_m.expires_at IS NULL OR requester_m.expires_at > statement_timestamp())
 JOIN security_workspace_tasks wt ON wt.workspace_id=w.id AND wt.task_id=proposal.task_id
 JOIN tasks t ON t.id=wt.task_id AND t.deleted_at IS NULL
 WHERE proposal.id=$2 AND p.id=$1 AND proposal.requester_id<>p.id AND proposal.valid_until > statement_timestamp()
@@ -85,6 +97,20 @@ RETURNING proposal_id`, approverID, proposalID).Scan(&id)
 	}
 	if err != nil {
 		return fmt.Errorf("approve synthetic scope: %w", err)
+	}
+	// Validate the exact persisted bytes and digest before committing the new
+	// decision. This also denies pre-existing malformed proposals. The row lock
+	// does not replace independently administered approval storage.
+	var document, hash []byte
+	if err := tx.QueryRowContext(ctx, `SELECT document,document_sha256 FROM security_scope_proposals WHERE id=$1 FOR SHARE`, id).Scan(&document, &hash); err != nil {
+		return fmt.Errorf("approve synthetic scope: load document: %w", err)
+	}
+	digest := sha256.Sum256(document)
+	if len(hash) != sha256.Size || subtle.ConstantTimeCompare(hash, digest[:]) != 1 || !validSyntheticScopeDocument(document) {
+		return ErrWorkspaceAccessDenied
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("approve synthetic scope: commit: %w", err)
 	}
 	return nil
 }
@@ -134,11 +160,13 @@ JOIN security_tenants tenant ON tenant.id=w.tenant_id AND tenant.enabled
 JOIN security_workspace_tasks wt ON wt.workspace_id=w.id AND wt.task_id=proposal.task_id
 JOIN tasks t ON t.id=wt.task_id AND t.deleted_at IS NULL
 JOIN security_principals requester ON requester.id=proposal.requester_id AND requester.enabled AND requester.kind='human'
-JOIN security_team_memberships requester_m ON requester_m.team_id=team.id AND requester_m.principal_id=requester.id
+JOIN security_team_memberships requester_m ON requester_m.id=proposal.requester_membership_id
+ AND requester_m.team_id=team.id AND requester_m.principal_id=requester.id
  AND requester_m.role IN ('operator','manager') AND requester_m.revoked_at IS NULL
  AND requester_m.valid_from<=statement_timestamp() AND (requester_m.expires_at IS NULL OR requester_m.expires_at>statement_timestamp())
 JOIN security_principals approver ON approver.id=approval.approver_id AND approver.enabled AND approver.kind='human'
-JOIN security_team_memberships approver_m ON approver_m.team_id=team.id AND approver_m.principal_id=approver.id
+JOIN security_team_memberships approver_m ON approver_m.id=approval.approver_membership_id
+ AND approver_m.team_id=team.id AND approver_m.principal_id=approver.id
  AND approver_m.role='approver' AND approver_m.revoked_at IS NULL
  AND approver_m.valid_from<=statement_timestamp() AND (approver_m.expires_at IS NULL OR approver_m.expires_at>statement_timestamp())
 JOIN security_principals reader ON reader.id=$1 AND reader.enabled AND reader.kind='human'
@@ -157,7 +185,7 @@ WHERE w.id=$2 AND proposal.id=$3 AND proposal.environment='synthetic'
 		return nil, fmt.Errorf("read approved synthetic scope: %w", err)
 	}
 	digest := sha256.Sum256(s.Document)
-	if len(hash) != sha256.Size || subtle.ConstantTimeCompare(hash, digest[:]) != 1 {
+	if len(hash) != sha256.Size || subtle.ConstantTimeCompare(hash, digest[:]) != 1 || !validSyntheticScopeDocument(s.Document) {
 		return nil, ErrWorkspaceAccessDenied
 	}
 	s.SHA256 = digest

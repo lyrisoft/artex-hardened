@@ -35,7 +35,7 @@ func TestScopedTriggerFiltersBeforeDisclosureAndRechecks(t *testing.T) {
 	principal := id(`INSERT INTO security_principals(kind,issuer,subject,enabled) VALUES ('service','synthetic','red',true) RETURNING id`)
 	other := id(`INSERT INTO security_principals(kind,issuer,subject,enabled) VALUES ('service','synthetic','blue',true) RETURNING id`)
 	member := id(`INSERT INTO security_team_memberships(team_id,principal_id,role) VALUES ($1,$2,'operator') RETURNING id`, red, principal)
-	exec(`INSERT INTO security_team_memberships(team_id,principal_id,role) VALUES ($1,$2,'operator')`, blue, other)
+	otherMember := id(`INSERT INTO security_team_memberships(team_id,principal_id,role) VALUES ($1,$2,'operator') RETURNING id`, blue, other)
 	agentID := id(`INSERT INTO agents(key,name,role,builtin,enabled) VALUES ('scoped_red_fixture','red','assistant',false,true) RETURNING id`)
 	exec(`INSERT INTO security_workspace_agents(workspace_id,agent_id) VALUES ($1,$2)`, rw, agentID)
 	redTask, err := d.CreateTask("red secret description", "red secret goal", nil, 0, 300)
@@ -61,7 +61,7 @@ func TestScopedTriggerFiltersBeforeDisclosureAndRechecks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exec(`INSERT INTO security_scoped_trigger_bindings(trigger_id,workspace_id,principal_id) VALUES ($1,$2,$3)`, tr.ID, rw, principal)
+	exec(`INSERT INTO security_scoped_trigger_bindings(trigger_id,workspace_id,principal_id,owner_membership_id) VALUES ($1,$2,$3,$4)`, tr.ID, rw, principal, member)
 	ctx := context.Background()
 	list := func(p, w int64) []ScopedToolEvent {
 		t.Helper()
@@ -91,6 +91,11 @@ func TestScopedTriggerFiltersBeforeDisclosureAndRechecks(t *testing.T) {
 	if len(list(other, rw)) != 0 || len(list(principal, bw)) != 0 {
 		t.Fatal("cross-principal or cross-team event disclosed")
 	}
+	exec(`UPDATE security_scoped_trigger_bindings SET owner_membership_id=$2 WHERE trigger_id=$1`, tr.ID, otherMember)
+	if len(list(principal, rw)) != 0 {
+		t.Fatal("a membership belonging to another principal and team disclosed events")
+	}
+	exec(`UPDATE security_scoped_trigger_bindings SET owner_membership_id=$2 WHERE trigger_id=$1`, tr.ID, member)
 	legacyEvents, err := d.NewToolCallsSince(0)
 	if err != nil {
 		t.Fatal(err)
@@ -118,6 +123,13 @@ func TestScopedTriggerFiltersBeforeDisclosureAndRechecks(t *testing.T) {
 	}
 	if _, err := d.ScopedToolEventForDispatch(ctx, principal, rw, tr.ID, redEvent); !errors.Is(err, ErrWorkspaceAccessDenied) {
 		t.Fatalf("revoked dispatch err=%v", err)
+	}
+	exec(`INSERT INTO security_team_memberships(team_id,principal_id,role) VALUES ($1,$2,'operator')`, red, principal)
+	if len(list(principal, rw)) != 0 {
+		t.Fatal("new membership revived an old trigger binding")
+	}
+	if _, err := d.ScopedToolEventForDispatch(ctx, principal, rw, tr.ID, redEvent); !errors.Is(err, ErrWorkspaceAccessDenied) {
+		t.Fatalf("regranted principal dispatched an old trigger: %v", err)
 	}
 	allowed, err := d.LegacyTriggerPermitted(ctx, "scoped_red_fixture", nil, nil)
 	if err != nil || allowed {

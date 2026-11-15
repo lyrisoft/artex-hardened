@@ -40,6 +40,8 @@ func TestSyntheticScopeApprovalIsAppendOnlyAndRevocable(t *testing.T) {
 	}
 	requester := mkPerson("human", "requester", "operator", team)
 	approver := mkPerson("human", "approver", "approver", team)
+	requesterMembership := id(`SELECT id FROM security_team_memberships WHERE team_id=$1 AND principal_id=$2`, team, requester)
+	approverMembership := id(`SELECT id FROM security_team_memberships WHERE team_id=$1 AND principal_id=$2`, team, approver)
 	service := mkPerson("service", "service", "approver", team)
 	outsider := mkPerson("human", "outsider", "approver", otherTeam)
 	viewer := mkPerson("human", "viewer", "viewer", team)
@@ -51,7 +53,7 @@ func TestSyntheticScopeApprovalIsAppendOnlyAndRevocable(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	doc := []byte(`{"targets":["synthetic.invalid"],"methods":["read"]}`)
-	for _, invalid := range [][]byte{[]byte(`[]`), []byte(`{}`), []byte(`{`)} {
+	for _, invalid := range [][]byte{[]byte(`[]`), []byte(`{}`), []byte(`{`), []byte(`{"targets":[],"targets":["other"]}`), []byte(`{"note":"\ud800"}`)} {
 		if _, err := d.ProposeSyntheticScope(ctx, requester, workspace, task.ID, invalid, now.Add(-time.Minute), now.Add(time.Hour)); !errors.Is(err, ErrWorkspaceAccessDenied) {
 			t.Fatalf("invalid proposal %q: %v", invalid, err)
 		}
@@ -81,6 +83,22 @@ func TestSyntheticScopeApprovalIsAppendOnlyAndRevocable(t *testing.T) {
 	if !bytes.Equal(scope.Document, doc) || scope.SHA256 != sha256.Sum256(doc) || scope.ApproverID != approver || scope.RequesterID != requester {
 		t.Fatalf("scope altered: %+v", scope)
 	}
+	// Even a matching digest cannot make ambiguous bytes safe to interpret if a
+	// record was inserted outside the proposal method.
+	ambiguous := []byte(`{"targets":[],"targets":["other"]}`)
+	ambiguousHash := sha256.Sum256(ambiguous)
+	ambiguousID := id(`INSERT INTO security_scope_proposals(workspace_id,task_id,requester_id,document,document_sha256,valid_from,valid_until,requester_membership_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, workspace, task.ID, requester, ambiguous, ambiguousHash[:], now.Add(-time.Minute), now.Add(time.Hour), requesterMembership)
+	if err := d.ApproveSyntheticScope(ctx, approver, ambiguousID); !errors.Is(err, ErrWorkspaceAccessDenied) {
+		t.Fatalf("ambiguous persisted scope approved: %v", err)
+	}
+	var decisions int
+	if err := d.QueryRow(`SELECT count(*) FROM security_scope_approvals WHERE proposal_id=$1`, ambiguousID).Scan(&decisions); err != nil || decisions != 0 {
+		t.Fatalf("rejected approval persisted: count=%d err=%v", decisions, err)
+	}
+	exec(`INSERT INTO security_scope_approvals(proposal_id,approver_id,approver_membership_id) VALUES ($1,$2,$3)`, ambiguousID, approver, approverMembership)
+	if _, err := d.ApprovedSyntheticScope(ctx, requester, workspace, ambiguousID); !errors.Is(err, ErrWorkspaceAccessDenied) {
+		t.Fatalf("ambiguous persisted scope was returned: %v", err)
+	}
 	if _, err := d.ApprovedSyntheticScope(ctx, viewer, workspace, proposal); !errors.Is(err, ErrWorkspaceAccessDenied) {
 		t.Fatalf("unrelated member read scope: %v", err)
 	}
@@ -96,7 +114,35 @@ func TestSyntheticScopeApprovalIsAppendOnlyAndRevocable(t *testing.T) {
 	if _, err := d.ApprovedSyntheticScope(ctx, requester, workspace, proposal); !errors.Is(err, ErrWorkspaceAccessDenied) {
 		t.Fatalf("revoked approver: %v", err)
 	}
-	exec(`UPDATE security_team_memberships SET revoked_at=NULL WHERE team_id=$1 AND principal_id=$2`, team, approver)
+	if _, err := d.Exec(`UPDATE security_team_memberships SET revoked_at=NULL WHERE id=$1`, approverMembership); err == nil {
+		t.Fatal("approver membership revocation was undone")
+	}
+	exec(`INSERT INTO security_team_memberships(team_id,principal_id,role) VALUES ($1,$2,'approver')`, team, approver)
+	if _, err := d.ApprovedSyntheticScope(ctx, requester, workspace, proposal); !errors.Is(err, ErrWorkspaceAccessDenied) {
+		t.Fatalf("regranted approver revived old approval: %v", err)
+	}
+	newProposal, err := d.ProposeSyntheticScope(ctx, requester, workspace, task.ID, doc, now.Add(-time.Minute), now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.ApproveSyntheticScope(ctx, approver, newProposal); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ApprovedSyntheticScope(ctx, requester, workspace, newProposal); err != nil {
+		t.Fatalf("newly approved scope unavailable: %v", err)
+	}
+	pending, err := d.ProposeSyntheticScope(ctx, requester, workspace, task.ID, doc, now.Add(-time.Minute), now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec(`UPDATE security_team_memberships SET revoked_at=now() WHERE id=$1`, requesterMembership)
+	exec(`INSERT INTO security_team_memberships(team_id,principal_id,role) VALUES ($1,$2,'operator')`, team, requester)
+	if _, err := d.ApprovedSyntheticScope(ctx, requester, workspace, newProposal); !errors.Is(err, ErrWorkspaceAccessDenied) {
+		t.Fatalf("regranted requester revived old scope: %v", err)
+	}
+	if err := d.ApproveSyntheticScope(ctx, approver, pending); !errors.Is(err, ErrWorkspaceAccessDenied) {
+		t.Fatalf("approved a proposal made under a revoked requester grant: %v", err)
+	}
 	if err := d.RevokeSyntheticScope(ctx, service, proposal, "synthetic test"); !errors.Is(err, ErrWorkspaceAccessDenied) {
 		t.Fatalf("service revoked: %v", err)
 	}

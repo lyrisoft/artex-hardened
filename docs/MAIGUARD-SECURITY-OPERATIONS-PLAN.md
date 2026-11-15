@@ -59,7 +59,7 @@ The program must close all of these paths before it claims isolation or enables 
 
 ### Phase 1 implementation checkpoint
 
-- Migrations 0004–0006 create inactive principal/workspace and scoped-trigger
+- Migrations 0004–0007 create inactive principal/workspace and scoped-trigger
   data, specialist/product catalogs and append-only synthetic-scope records. No
   principal, agent, trigger, credential or executor is enabled by these migrations.
   A lookup maps an already verified issuer, subject and kind to an enabled
@@ -93,10 +93,24 @@ The program must close all of these paths before it claims isolation or enables 
 - A synthetic scope proposal stores exact JSON bytes and their hash; a distinct
   active human approver may append an approval, and an authorized human may append
   a revocation. The read path rechecks memberships, task assignment, time and hash.
+  Proposal, approval and read paths reject duplicate JSON keys, invalid UTF-8,
+  unpaired surrogate escapes and excessive nesting, without rewriting the approved
+  bytes. Previously stored ambiguous documents cannot be newly approved or read;
+  this changes no existing records and does not validate target or method semantics.
   A label does not establish that data or targets are synthetic. JSON semantics,
   approved methods, signatures, independent storage/administration and egress
   enforcement are not implemented. DB owners can bypass the append-only triggers;
   no proposal or approval authorizes a network action.
+- Scope proposals, approvals and scoped trigger bindings now refer to the exact
+  membership grant that created them. A revoked grant cannot be restored or edited;
+  a new grant does not revive old approvals or bindings. Re-enabling a disabled
+  identity, tenant, team or workspace can still restore access if its grant was not
+  revoked. Principal issuer, subject and kind can still be changed in the database;
+  an identity integration must prevent reassignment from transferring existing
+  grants, or bind grants to immutable identity versions, before activation.
+  Active-run revocation and independent administration also need design and tests.
+  Migration 0007 preserves older unbound records but does not infer their grants;
+  they remain unavailable to the new lookup until handled by an approved process.
 - The legacy scheduler excludes assigned tasks, agents and bound triggers from its
   global queries, retains source IDs through queue merges and rechecks before a
   legacy run. These checks are not atomic with runtime execution or data migration.
@@ -238,7 +252,11 @@ Implementation slices, in dependency order:
 catalog rows, leaves existing tasks/agents untouched, and does not assign ownership.
 `0005_scoped_trigger_bindings.sql` adds disabled trigger bindings and
 `0006_synthetic_scope_records.sql` adds append-only synthetic proposal, approval
-and revocation records. The last two add no bindings or scopes during migration.
+and revocation records. `0007_scope_membership_bindings.sql` adds nullable grant
+references and makes grant fields and revocation immutable. It leaves earlier
+records unbound rather than inferring ownership; review and recreate any needed
+proposals or bindings through an authorized process. These migrations add no live
+bindings or scopes during migration.
 On a disposable copy, verify the pre-migration backup, record its checksum and the
 applied migration checksums, upgrade, check legacy evidence/graphs, and run the
 negative membership and authorization suite before enabling any future feature.
@@ -247,7 +265,7 @@ No migration makes old shared-password sessions trustworthy.
 For a rollback rehearsal, stop admission and drain/terminate isolated leases, export
 and preserve all new membership/evidence/audit records, and verify backup integrity.
 Use a rollback build that retains the exact embedded bytes/checksums of all applied
-migrations 0004–0006 but disables the new feature; an older binary missing any
+migrations 0004–0007 but disables the new feature; an older binary missing any
 applied migration will refuse the newer migration record. Alternatively restore the verified pre-migration backup to
 a separate database and reconcile all writes since the snapshot before switching.
 Never remove the recorded checksum to force an older binary to start. Owner approval
@@ -333,6 +351,13 @@ is reviewed. A prior main-branch CI pass does not prove a new branch or runtime.
 
 ## Validation record
 
+- After migration 0007, targeted PostgreSQL tests passed under `go test -race`
+  for unbound-record upgrade, membership revocation/regrant, scope approval and
+  scoped-trigger filtering. A 30-second parser fuzz run passed with 41,138 inputs;
+  `go build -p 2 ./...` and `go vet -p 2 ./...` also passed. An initial full
+  suite inherited the workspace HTTP proxy: two WebFetch dialer fixtures failed
+  because the target guard denied the proxy address. A clean-environment rerun
+  is required; the guard was not relaxed.
 - After the strict skill and standalone-discovery changes, `go build -p 2 ./...`,
   `go vet -p 2 ./...`, and `go test -p 1 -count=1 -timeout 180s ./...` passed.
   The test suite used a fresh synthetic PostgreSQL database on loopback. The CI

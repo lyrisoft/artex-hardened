@@ -91,17 +91,37 @@ func TestResolveWorkspaceMembership(t *testing.T) {
 			t.Fatalf("enable %s: %v", tc.name, err)
 		}
 	}
-	if _, err := d.Exec(`UPDATE security_team_memberships SET valid_from=now()+interval '1 day' WHERE id=$1`, membership); err != nil {
-		t.Fatal(err)
+	for _, query := range []string{
+		`UPDATE security_team_memberships SET role='manager' WHERE id=$1`,
+		`UPDATE security_team_memberships SET valid_from=now()-interval '1 day' WHERE id=$1`,
+		`UPDATE security_team_memberships SET expires_at=now()+interval '1 day' WHERE id=$1`,
+	} {
+		if _, err := d.Exec(query, membership); err == nil {
+			t.Fatalf("membership grant could be changed: %s", query)
+		}
 	}
+	revoke := func(grant int64) {
+		t.Helper()
+		if _, err := d.Exec(`UPDATE security_team_memberships SET revoked_at=now() WHERE id=$1`, grant); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.Exec(`UPDATE security_team_memberships SET revoked_at=NULL WHERE id=$1`, grant); err == nil {
+			t.Fatal("membership revocation could be undone")
+		}
+	}
+	revoke(membership)
 	deny(principal, workspace)
-	if _, err := d.Exec(`UPDATE security_team_memberships SET valid_from=now()-interval '2 days', expires_at=now()-interval '1 day' WHERE id=$1`, membership); err != nil {
-		t.Fatal(err)
-	}
+	future := id(`INSERT INTO security_team_memberships(team_id,principal_id,role,valid_from) VALUES ($1,$2,'operator',now()+interval '1 day') RETURNING id`, team, principal)
 	deny(principal, workspace)
-	if _, err := d.Exec(`UPDATE security_team_memberships SET expires_at=now()+interval '1 day', revoked_at=now() WHERE id=$1`, membership); err != nil {
-		t.Fatal(err)
+	revoke(future)
+	expired := id(`INSERT INTO security_team_memberships(team_id,principal_id,role,valid_from,expires_at) VALUES ($1,$2,'operator',now()-interval '2 days',now()-interval '1 day') RETURNING id`, team, principal)
+	deny(principal, workspace)
+	revoke(expired)
+	current := id(`INSERT INTO security_team_memberships(team_id,principal_id,role) VALUES ($1,$2,'operator') RETURNING id`, team, principal)
+	if _, err := d.ResolveWorkspaceMembership(context.Background(), principal, workspace); err != nil {
+		t.Fatalf("new grant not resolved: %v", err)
 	}
+	revoke(current)
 	deny(principal, workspace)
 
 	ctx, cancel := context.WithCancel(context.Background())
