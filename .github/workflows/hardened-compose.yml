@@ -1,0 +1,20 @@
+name: hardened-compose-guardrails
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate rendered Docker Compose isolation defaults
+        env:
+          POSTGRES_PASSWORD: ci-placeholder-not-a-secret
+        run: |
+          docker compose config --quiet
+          docker compose config --format json | python3 scripts/check-compose-security.py
