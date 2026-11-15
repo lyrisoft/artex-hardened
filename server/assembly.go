@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"path/filepath"
 	"strings"
 
 	"github.com/Autumn-27/artex/agent"
@@ -210,31 +209,6 @@ func loadAgentVisibility(source agentVisibilitySource, key string) (*db.Agent, [
 		return nil, nil, nil, nil, fmt.Errorf("load MCP catalog: %w", err)
 	}
 	return a, names, ids, servers, nil
-}
-
-func loadVisibleSkills(dir string, names []string) (*skill.Registry, error) {
-	if len(names) == 0 {
-		return nil, nil
-	}
-	all, err := skill.LoadDir(dir)
-	if err != nil {
-		return nil, fmt.Errorf("load visible skills: %w", err)
-	}
-	want := make(map[string]bool, len(names))
-	for _, name := range names {
-		want[name] = true
-	}
-	reg := skill.NewRegistry()
-	for _, sk := range all.List() {
-		if sk.Dir != "" && want[filepath.Base(sk.Dir)] {
-			delete(want, filepath.Base(sk.Dir))
-			reg.Add(sk)
-		}
-	}
-	if len(want) > 0 {
-		return nil, fmt.Errorf("one or more visible skills could not be loaded")
-	}
-	return reg, nil
 }
 
 func idSet(ids []int64) map[int64]bool {

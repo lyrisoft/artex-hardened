@@ -46,12 +46,15 @@ not automatically removed by MCP/skill visibility. The original tool resolver
 also passed its input through when the catalog query failed. This branch stops the
 four main agent paths and goal decomposition on a catalog failure, checks before
 MCP augmentation, and rechecks the catalog at each harness call (including SDK
-and deferred calls). Agent assembly also aborts if its visibility inputs or an
-assigned skill cannot be loaded. The SDK can silently discard malformed skill
-frontmatter, so this does not establish a reliable skill-to-MCP boundary. Unknown
-legacy tools still pass the catalog check; standalone MCP discovery, per-team
-authorization and independent process isolation remain incomplete. These
-checks do not stop a permitted shell from accessing shared files or connections.
+and deferred calls). Agent assembly aborts if visibility inputs are unavailable or
+assigned skill metadata is malformed, and uses one validated snapshot for skill
+and MCP gating. Standalone cache discovery no longer runs automatically at server
+startup; explicit legacy-authenticated requests recheck catalog availability and
+reload the selected MCP configuration before connecting. The shared JWT is not an
+individual identity or team grant, and other legacy sync actions remain unscoped.
+Unknown legacy tools still pass the catalog check; per-team authorization and
+independent process isolation remain incomplete. These checks do not stop a
+permitted shell from accessing shared files or connections.
 The program must close all of these paths before it claims isolation or enables teams.
 
 ### Phase 1 implementation checkpoint
@@ -74,6 +77,19 @@ The program must close all of these paths before it claims isolation or enables 
   changed, so an operator must explicitly add that binding to retain automatic
   goal-stage scope extraction. Planner scope tools and existing graph data remain.
   Decide and test the migration of existing customized bindings before rollout.
+  Reseeding does not overwrite customized descriptions, schemas, enabled flags,
+  or bindings. Valid legacy skill metadata forms remain supported; malformed YAML,
+  invalid MCP lists, duplicate skill names, and missing assigned skills now stop
+  assembly rather than silently dropping gating metadata.
+- Standalone MCP cache discovery requires an explicit legacy-authenticated HTTP
+  add/refresh or status request; startup no longer contacts enabled MCPs just to
+  populate the cache. An explicit refresh of a disabled legacy entry remains
+  available. Existing cached tool metadata is retained; a new installation with
+  no cached tools needs an explicit refresh to populate its tool list. Restored
+  legacy tasks may still start MCP clients. The shared JWT cannot establish a human principal;
+  direct legacy ScopeSentry sync and agent runtime MCP calls remain outside team
+  isolation, and a later configuration change cannot interrupt an active client.
+  No scoped team access is activated.
 - A synthetic scope proposal stores exact JSON bytes and their hash; a distinct
   active human approver may append an approval, and an authorized human may append
   a revocation. The read path rechecks memberships, task assignment, time and hash.
@@ -317,14 +333,34 @@ is reviewed. A prior main-branch CI pass does not prove a new branch or runtime.
 
 ## Validation record
 
+- After the strict skill and standalone-discovery changes, `go build -p 2 ./...`,
+  `go vet -p 2 ./...`, and `go test -p 1 -count=1 -timeout 180s ./...` passed.
+  The test suite used a fresh synthetic PostgreSQL database on loopback. The CI
+  package list also passed against a separate fresh database:
+
+  ```sh
+  go test -race -p 1 -count=1 -timeout 180s ./agent ./cmd/artex ./config ./db \
+    ./evidence ./guard ./intercept ./llmpool ./llmrec ./mcphttp ./notify \
+    ./server ./sidequestion ./traffic
+  ```
+
+  Existing test skips remain; these results do not establish team isolation.
+- Focused `go test -race -p 1 -count=1 -timeout 120s ./db ./server -run ...`
+  passed on synthetic PostgreSQL and loopback-only MCP fixtures after the strict
+  skill and standalone-discovery changes. Tests cover valid custom skill formats,
+  malformed metadata before a connection, gated MCP unlock, explicit legacy
+  creation/refresh, policy-store failure, cancellation, and preservation of custom
+  catalog settings. The startup cache-discovery removal is intentional; it does
+  not disable explicit refresh or existing cached metadata. These checks do not
+  prove identity, credential, process or network isolation.
 - After the visibility-error change, `go test -p 1 -count=1 -timeout 180s
   ./...` passed against a fresh synthetic PostgreSQL cluster. The first run exposed
   fixtures using a closed visibility store, missing shipped skills, and a temporary
   skill binding whose cleanup ran after its DB closed; the fixtures now use a live
   store and clean up in order. The complete `go test -race -p 1 -count=1
   -timeout 180s ./agent ./server` passed on another fresh fixture, as did
-  `go vet -p 2 ./agent ./server` and a Go build. These checks do not validate malformed skill metadata or establish
-  team isolation.
+  `go vet -p 2 ./agent ./server` and a Go build. Those earlier checks did not
+  validate malformed skill metadata or establish team isolation.
 - On this Phase 1 branch, `go test -p 1 -count=1 ./...` passed on a fresh,
   loopback-only synthetic PostgreSQL fixture after updating the migration inventory
   and a manually constructed chat-worker test to use its own live policy store.

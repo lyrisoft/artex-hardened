@@ -277,9 +277,8 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	if s.scrubSecrets {
 		ScrubSecretEnv()
 	}
-	// Fill the tool cache for any enabled MCP that has none yet (notably the
-	// seeded browser MCP on first run). Async so it never blocks startup.
-	go s.discoverEmptyMCPsOnStartup()
+	// Standalone cache discovery requires an explicit authenticated request.
+	// Restored legacy tasks below may still start MCP clients during execution.
 	s.restoreTaskRuntimes()
 	go s.reconcileConcurrency()
 	s.startTaskArchiveWorker()

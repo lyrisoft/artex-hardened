@@ -983,7 +983,7 @@ func (s *Server) pgSaveMCP(w http.ResponseWriter, r *http.Request) {
 	if isNew && m.Enabled {
 		m.ID = id
 		ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
-		if derr := s.discoverAndCacheMCP(ctx, &m); derr != nil {
+		if derr := s.discoverAndCacheMCP(ctx, m.ID, true); derr != nil {
 			log.Printf("[mcp] tool discovery after adding %s failed: %v", m.Name, derr)
 		}
 		cancel()
@@ -1012,17 +1012,14 @@ func (s *Server) pgRefreshMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, _ := pathInt(r, "id")
-	all, err := pg.ListMCP()
+	if id <= 0 {
+		writeErr(w, 404, "MCP does not exist")
+		return
+	}
+	target, err := pg.MCPByID(r.Context(), id)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
-	}
-	var target *db.MCPServer
-	for _, m := range all {
-		if m.ID == id {
-			target = m
-			break
-		}
 	}
 	if target == nil {
 		writeErr(w, 404, "MCP does not exist")
@@ -1030,7 +1027,7 @@ func (s *Server) pgRefreshMCP(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 	defer cancel()
-	if err := s.discoverAndCacheMCP(ctx, target); err != nil {
+	if err := s.discoverAndCacheMCP(ctx, id, false); err != nil {
 		writeErr(w, 502, "tool discovery failed: "+err.Error())
 		return
 	}
