@@ -25,10 +25,10 @@ func callReadJSON(t *testing.T, tool actool.CoreTool, input string) any {
 	return out
 }
 
-func TestGraphOverviewExpandsAssociatedCompanyScope(t *testing.T) {
-	t.Skip("known failure with a fresh database, pre-existing on unmodified upstream; tracked in BaaRai/ARTEX#9")
+func TestGraphOverviewAndCompanyScopeOnDemand(t *testing.T) {
 	d := testDB(t)
-	defer d.Close()
+	// Keep the connection open until task, asset and company cleanup has run.
+	t.Cleanup(func() { _ = d.Close() })
 
 	companies := d.Companies()
 	companyID, _, err := companies.UpsertCompany(fmt.Sprintf("overview-scope-%d", time.Now().UnixNano()), "")
@@ -83,26 +83,40 @@ func TestGraphOverviewExpandsAssociatedCompanyScope(t *testing.T) {
 	if !ok {
 		t.Fatalf("coverage missing: %#v", overview["coverage"])
 	}
-	scopeRows, ok := coverage["scope"].([]map[string]any)
-	if !ok || len(scopeRows) != 1 {
-		t.Fatalf("task scope missing: %#v", coverage["scope"])
+	// graph_overview intentionally stopped flattening company scope in upstream
+	// commit 90ccfad. Verify the association and its full detailed rules through
+	// the current on-demand surfaces instead of restoring an obsolete field.
+	if _, exists := coverage["scope"]; exists {
+		t.Fatal("graph overview unexpectedly flattened detailed scope")
 	}
-	companyScope, ok := scopeRows[0]["company_scope"].([]map[string]any)
+	scopeRows, err := assets.ListTaskScopeWithSources(task.ID)
+	if err != nil || len(scopeRows) != 1 || scopeRows[0].Kind != "company" || scopeRows[0].CompanyID == nil || *scopeRows[0].CompanyID != companyID {
+		t.Fatalf("task company association missing: scope=%+v err=%v", scopeRows, err)
+	}
+	companyList, ok := callReadJSON(t, tools.listCompanies(), fmt.Sprintf(`{"search":%q}`, companiesName(t, companies, companyID))).(map[string]any)
+	if !ok {
+		t.Fatal("list_companies returned a non-object")
+	}
+	companyRows, ok := companyList["companies"].([]any)
+	if !ok || len(companyRows) != 1 {
+		t.Fatalf("company missing from on-demand list: %#v", companyList)
+	}
+	companyRow, ok := companyRows[0].(map[string]any)
+	if !ok || companyRow["id"] != float64(companyID) {
+		t.Fatalf("wrong company in on-demand list: %#v", companyRows[0])
+	}
+	companyScope, ok := companyRow["scope"].([]any)
 	if !ok || len(companyScope) != len(inputs) {
-		t.Fatalf("company scope not expanded: %#v", scopeRows[0])
+		t.Fatalf("company scope not available on demand: %#v", companyRow)
 	}
-	kinds := make(map[string]string, len(companyScope))
-	for _, rule := range companyScope {
-		kinds[fmt.Sprint(rule["kind"])] = fmt.Sprint(rule["value"])
+	values := make(map[string]bool, len(companyScope))
+	for _, value := range companyScope {
+		values[fmt.Sprint(value)] = true
 	}
 	for _, input := range inputs {
-		if kinds[input.Kind] != input.Value {
-			t.Errorf("scope %s=%q want %q", input.Kind, kinds[input.Kind], input.Value)
+		if !values[input.Value] {
+			t.Errorf("company scope %s=%q missing from %v", input.Kind, input.Value, values)
 		}
-	}
-	keywords, ok := scopeRows[0]["company_keywords"].([]string)
-	if !ok || len(keywords) != 1 || keywords[0] != keyword {
-		t.Fatalf("company keywords missing: %#v", scopeRows[0]["company_keywords"])
 	}
 	if hc, _ := coverage["host_count"].(int); hc < 1 {
 		t.Fatalf("company asset host not counted in agent context: %#v", coverage["host_count"])

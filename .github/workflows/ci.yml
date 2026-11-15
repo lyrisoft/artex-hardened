@@ -31,13 +31,9 @@ jobs:
           go-version-file: go.mod
       - run: go build ./...
       - run: go vet ./...
-      # Skipped tests, tracked in issue #9:
-      # - TestGraphOverviewExpandsAssociatedCompanyScope,
-      #   TestCaptureApprovalLifecycle: fail on unmodified upstream code with a
-      #   fresh database.
-      # - TestSideUsageRecordedOnceOnConsumerCancellation: concurrency/cancellation
-      #   test that passes locally but is timing-sensitive on 2-core CI runners.
-      # They now skip themselves in code (t.Skip with a pointer to the issue).
+      # Skipped test, tracked in issue #9:
+      # TestSideUsageRecordedOnceOnConsumerCancellation passes locally but is
+      # timing-sensitive on 2-core CI runners; it skips itself in code.
       - name: go test
         # -p 1: package test suites share the single postgres service; running
         # them in parallel makes packages delete each other's rows (observed

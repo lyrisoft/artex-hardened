@@ -813,6 +813,11 @@ func (i *Interceptor) Log(ctx context.Context, convID int64, dec Decision, toolN
 // page shows it and the sidebar badge lights up. The worker thread blocks just
 // like in a chat session — the user must visit the approvals page to unblock it.
 func (i *Interceptor) HandleAsk(ctx context.Context, convID int64, dec Decision, toolName string, input []byte) bool {
+	// No durable approval store means there is no independent decision to honor.
+	// Fail closed instead of panicking or proceeding without an approval record.
+	if i == nil || i.db == nil {
+		return false
+	}
 	ruleID := dec.RuleID
 	taskID, agentName := taskInfoFromCtx(ctx)
 	taskEmit := taskEmitFromCtx(ctx)

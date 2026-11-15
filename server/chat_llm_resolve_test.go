@@ -40,10 +40,16 @@ func TestChatUnavailableReasonDistinguishesStates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_, _ = m.pg.Exec(`UPDATE llm_profiles SET is_default=false WHERE id=$1`, id)
-		_ = m.pg.DeleteProfile(id)
-	})
+	// Clean up before the deferred manager close; t.Cleanup runs after defers and
+	// would otherwise leave an active fake profile for later tests to inherit.
+	defer func() {
+		if _, err := m.pg.Exec(`UPDATE llm_profiles SET is_default=false WHERE id=$1`, id); err != nil {
+			t.Errorf("clear test profile: %v", err)
+		}
+		if err := m.pg.DeleteProfile(id); err != nil {
+			t.Errorf("delete test profile: %v", err)
+		}
+	}()
 
 	// Profile exists but is not activated.
 	if reason := s.chatUnavailableReason(); !strings.Contains(reason, "No active LLM profile") {
@@ -85,7 +91,11 @@ func TestResolveChatAgentHonoursConversationProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = m.pg.DeleteProfile(id) })
+	defer func() {
+		if err := m.pg.DeleteProfile(id); err != nil {
+			t.Errorf("delete test profile: %v", err)
+		}
+	}()
 
 	// A conversation that pinned this profile resolves a chat agent despite the
 	// nil global fallback; without the fix the send precheck rejected it outright.
