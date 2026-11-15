@@ -54,6 +54,8 @@ The program must close all of these paths before it claims isolation or enables 
 - Migrations 0004–0006 create inactive principal/workspace and scoped-trigger
   data, specialist/product catalogs and append-only synthetic-scope records. No
   principal, agent, trigger, credential or executor is enabled by these migrations.
+  A lookup maps an already verified issuer, subject and kind to an enabled
+  persisted principal; it does not verify credentials or choose an identity provider.
   Legacy records are not automatically assigned or quarantined; legacy HTTP routes
   still use the shared identity and can access data outside these proposed checks.
 - `AuthorizeWorkspaceAction` checks current membership and a directly assigned
@@ -317,7 +319,8 @@ is reviewed. A prior main-branch CI pass does not prove a new branch or runtime.
   passed against a separate fresh fixture. After the final goal-prompt, nested
   deferred-call and inactive dispatch-seam edits, the complete normal suite was
   repeated on another fresh fixture and affected agent and server tests were rerun
-  under `-race`.
+  under `-race`. The subsequent inactive verified-identity lookup and related
+  database-policy regressions also passed under `-race` on a fresh fixture.
   The new tests cover policy-store outages before/after augmentation and at calls,
   SDK/deferred tool checks, no tools in connection tests, workspace CRUD/default
   denials, scoped scheduler filtering and revocation, distinct human scope approval,
