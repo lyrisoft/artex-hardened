@@ -41,12 +41,52 @@ claim exactly-once delivery. Existing credentials and evidence are not team scop
 but `TaskCredentials` decrypts them and `taskCredentialOverview` includes them in
 agent context, which can reach the configured model provider. SDK default tools are
 not automatically removed by MCP/skill visibility. The original tool resolver
-also passed the original list through when the catalog query failed; this branch
-withholds that resolver input on error. This is only a partial mitigation: WebFetch,
-optional web search and SDK background tools are added after resolution, and MCP
-clients may already have started. Stop the entire run on policy-store failure and
-apply per-team call-time authorization before claiming a fail-closed tool boundary.
+also passed its input through when the catalog query failed. This branch stops the
+four main agent paths and goal decomposition on a catalog failure, checks before
+MCP augmentation, and rechecks the catalog at each harness call (including SDK
+and deferred calls). Unknown legacy tools still pass the catalog check; MCP startup,
+per-team authorization and independent process isolation remain incomplete. These
+checks do not stop a permitted shell from accessing shared files or connections.
 The program must close all of these paths before it claims isolation or enables teams.
+
+### Phase 1 implementation checkpoint
+
+- Migrations 0004–0006 create inactive principal/workspace and scoped-trigger
+  data, specialist/product catalogs and append-only synthetic-scope records. No
+  principal, agent, trigger, credential or executor is enabled by these migrations.
+  Legacy records are not automatically assigned or quarantined; legacy HTTP routes
+  still use the shared identity and can access data outside these proposed checks.
+- `AuthorizeWorkspaceAction` checks current membership and a directly assigned
+  agent or task for a narrow set of CRUD actions. Scheduling/execution, evidence,
+  secrets, tool/MCP calls, approval decisions and protected detection changes deny
+  by default. It is not connected to the legacy API or runtime and is not sufficient
+  on its own: an eventual protected operation must authenticate its caller and
+  combine resource verification and authorization with the operation transaction.
+- Goal decomposition now honors catalog bindings for `add_task_scope`. Newly seeded
+  catalogs include the goals binding; an existing catalog is not automatically
+  changed, so an operator must explicitly add that binding to retain automatic
+  goal-stage scope extraction. Planner scope tools and existing graph data remain.
+  Decide and test the migration of existing customized bindings before rollout.
+- A synthetic scope proposal stores exact JSON bytes and their hash; a distinct
+  active human approver may append an approval, and an authorized human may append
+  a revocation. The read path rechecks memberships, task assignment, time and hash.
+  A label does not establish that data or targets are synthetic. JSON semantics,
+  approved methods, signatures, independent storage/administration and egress
+  enforcement are not implemented. DB owners can bypass the append-only triggers;
+  no proposal or approval authorizes a network action.
+- The legacy scheduler excludes assigned tasks, agents and bound triggers from its
+  global queries, retains source IDs through queue merges and rechecks before a
+  legacy run. These checks are not atomic with runtime execution or data migration.
+  The inactive scoped tool-event query filters by bound principal, workspace,
+  membership, trigger, agent and task in PostgreSQL, returns metadata without raw
+  inputs/outputs and supports a fresh pre-dispatch check. An inactive dispatch
+  seam rechecks before a trusted sink, but is not wired to the executor; other
+  event types and transactional queues/leases remain unfinished.
+- `security/runnercontract` validates only a desired configuration (non-root,
+  immutable image digest, no host mounts or environment, resource limits and
+  distinct team policy references). It does not launch, attest or isolate a real
+  executor, verify an egress broker, or make a target safe. All execution remains
+  legacy and shared-process until an owner-approved isolated executor is implemented.
 
 Owner decisions before operational rollout (the proposed defaults below are
 engineering directions, not authorization):
@@ -173,6 +213,9 @@ Implementation slices, in dependency order:
 
 `0004_team_foundation.sql` is additive: it adds disabled security records and
 catalog rows, leaves existing tasks/agents untouched, and does not assign ownership.
+`0005_scoped_trigger_bindings.sql` adds disabled trigger bindings and
+`0006_synthetic_scope_records.sql` adds append-only synthetic proposal, approval
+and revocation records. The last two add no bindings or scopes during migration.
 On a disposable copy, verify the pre-migration backup, record its checksum and the
 applied migration checksums, upgrade, check legacy evidence/graphs, and run the
 negative membership and authorization suite before enabling any future feature.
@@ -180,9 +223,9 @@ No migration makes old shared-password sessions trustworthy.
 
 For a rollback rehearsal, stop admission and drain/terminate isolated leases, export
 and preserve all new membership/evidence/audit records, and verify backup integrity.
-Use a rollback build that retains the exact embedded bytes/checksum of migration
-0004 but disables the new feature; the unchanged pre-0004 binary will refuse the
-newer migration record. Alternatively restore the verified pre-migration backup to
+Use a rollback build that retains the exact embedded bytes/checksums of all applied
+migrations 0004–0006 but disables the new feature; an older binary missing any
+applied migration will refuse the newer migration record. Alternatively restore the verified pre-migration backup to
 a separate database and reconcile all writes since the snapshot before switching.
 Never remove the recorded checksum to force an older binary to start. Owner approval
 and a tested change window are required for any live migration, restoration or
@@ -267,6 +310,23 @@ is reviewed. A prior main-branch CI pass does not prove a new branch or runtime.
 
 ## Validation record
 
+- On this Phase 1 branch, `go test -p 1 -count=1 ./...` passed on a fresh,
+  loopback-only synthetic PostgreSQL fixture after updating the migration inventory
+  and a manually constructed chat-worker test to use its own live policy store.
+  `go test -race -p 1 -count=1 ./db ./agent ./server ./security/runnercontract`
+  passed against a separate fresh fixture. After the final goal-prompt, nested
+  deferred-call and inactive dispatch-seam edits, the complete normal suite was
+  repeated on another fresh fixture and affected agent and server tests were rerun
+  under `-race`.
+  The new tests cover policy-store outages before/after augmentation and at calls,
+  SDK/deferred tool checks, no tools in connection tests, workspace CRUD/default
+  denials, scoped scheduler filtering and revocation, distinct human scope approval,
+  append-only records and hash checks, and the inactive runner contract. They do not
+  prove production isolation or authorize an activation. Existing skips remain.
+- `go vet -p 2 ./...`, `go build -p 2 ./...`, frontend `tsc --noEmit` and
+  `npm run build:static`, and the seven loopback broker tests passed locally. Docker
+  is unavailable locally; the existing GitHub Docker fixture must rerun on the new
+  PR head and still does not establish team isolation.
 - Main `855bccf`: GitHub Actions `ci` failed in Go tests; build and vet passed,
   web and shell jobs passed, race job was skipped. Failures were
   `TestTargetOnlyGuardSkipsRules` (nil approval DB) and `TestSkillTools` (expected
@@ -293,7 +353,8 @@ is reviewed. A prior main-branch CI pass does not prove a new branch or runtime.
   After the catalog failure change, `go test -p 1 -count=1 -v ./server -run
   '^TestWireTools'`, the same command with `-race`, and `go build -p 2 ./server`
   passed: an unavailable catalog returned no resolver-input tools and a healthy
-  catalog retained its normal bindings. Later-injected SDK tools remain a known gap.
+  catalog retained its normal bindings. Those earlier results predate the newer
+  per-call policy checks; see subsequent validation for the current implementation.
   `npm ci --ignore-scripts --no-audit --no-fund`, `tsc --noEmit` and
   `npm run build:static` passed using Node 24 and the environment's trusted proxy;
   CI uses Node 22. Network-guard (4 tests) and model-broker (7 tests) Python suites

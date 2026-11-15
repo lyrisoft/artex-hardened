@@ -616,7 +616,29 @@ func (s *Server) readTriggerBehavior(agentKey string) triggerBehavior {
 // merging by task / all / none); parallel → run each fire in its own concurrent
 // conversation up to trigger_max_parallel. Distinct agents always run concurrently.
 func (s *Server) StartTriggeredRun(agentKey, title, message string, taskID int64, mergeable bool, taskDesc, taskGoal string) {
+	s.startTriggeredRun(0, agentKey, title, message, taskID, mergeable, taskDesc, taskGoal)
+}
+
+// startTriggeredRun keeps the originating trigger ID so a later scoped binding,
+// disable, deletion or reassignment invalidates queued legacy delivery.
+func (s *Server) startTriggeredRun(triggerID int64, agentKey, title, message string, taskID int64, mergeable bool, taskDesc, taskGoal string) {
 	if s.m.pg == nil || s.chatAgentRef() == nil {
+		return
+	}
+	var taskIDs []int64
+	if taskID > 0 {
+		taskIDs = []int64{taskID}
+	} else if taskID < 0 {
+		return
+	}
+	var triggerIDs []int64
+	if triggerID > 0 {
+		triggerIDs = []int64{triggerID}
+	} else if triggerID < 0 {
+		return
+	}
+	allowed, err := s.m.pg.LegacyTriggerPermitted(context.Background(), agentKey, taskIDs, triggerIDs)
+	if err != nil || !allowed {
 		return
 	}
 	cfg := s.readTriggerBehavior(agentKey) // DB read BEFORE the lock (never under queueMu)
@@ -627,7 +649,7 @@ func (s *Server) StartTriggeredRun(agentKey, title, message string, taskID int64
 	}
 	s.queueMu.Lock()
 	s.triggerCfg[agentKey] = cfg
-	s.triggerQ[agentKey] = append(s.triggerQ[agentKey], triggeredRun{agentKey: agentKey, title: title, message: message, taskID: taskID, taskDesc: taskDesc, taskGoal: taskGoal, mergeable: mergeable, targetGate: gated})
+	s.triggerQ[agentKey] = append(s.triggerQ[agentKey], triggeredRun{agentKey: agentKey, title: title, message: message, taskID: taskID, taskDesc: taskDesc, taskGoal: taskGoal, mergeable: mergeable, targetGate: gated, legacyTaskIDs: taskIDs, legacyTriggerIDs: triggerIDs})
 	s.pumpLocked(agentKey)
 	s.queueMu.Unlock()
 }
@@ -754,14 +776,50 @@ func mergeTriggeredRuns(items []triggeredRun) triggeredRun {
 		fmt.Fprintf(&b, "\n── trigger %d ──\n%s\n", i+1, it.message)
 	}
 	return triggeredRun{
-		agentKey:   first.agentKey,
-		title:      fmt.Sprintf("Merged triggers · task#%d · %d items", first.taskID, len(items)),
-		message:    b.String(),
-		taskID:     first.taskID,
-		mergeable:  true,
-		targetGate: anyTriggerGated(items),
+		agentKey:         first.agentKey,
+		title:            fmt.Sprintf("Merged triggers · task#%d · %d items", first.taskID, len(items)),
+		message:          b.String(),
+		taskID:           first.taskID,
+		mergeable:        true,
+		targetGate:       anyTriggerGated(items),
+		legacyTaskIDs:    triggerSourceTasks(items),
+		legacyTriggerIDs: triggerSourceTriggers(items),
 		// taskDesc/taskGoal left empty: header already embedded above.
 	}
+}
+
+// triggerSourceTasks retains every source for the authorization recheck after
+// a queue merge. A zero task ID is a task-free interval, never a wildcard.
+func triggerSourceTasks(items []triggeredRun) []int64 {
+	seen := map[int64]bool{}
+	var ids []int64
+	add := func(id int64) {
+		if id > 0 && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	for _, item := range items {
+		add(item.taskID)
+		for _, id := range item.legacyTaskIDs {
+			add(id)
+		}
+	}
+	return ids
+}
+
+func triggerSourceTriggers(items []triggeredRun) []int64 {
+	seen := map[int64]bool{}
+	var ids []int64
+	for _, item := range items {
+		for _, id := range item.legacyTriggerIDs {
+			if id > 0 && !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids
 }
 
 // anyTriggerGated reports whether any fire of a merged run came from a gated task.
@@ -807,12 +865,14 @@ func mergeAllRuns(items []triggeredRun) triggeredRun {
 		}
 	}
 	return triggeredRun{
-		agentKey:   first.agentKey,
-		title:      fmt.Sprintf("Merged triggers · all · %d items", len(items)),
-		message:    b.String(),
-		taskID:     first.taskID,
-		mergeable:  true,
-		targetGate: anyTriggerGated(items),
+		agentKey:         first.agentKey,
+		title:            fmt.Sprintf("Merged triggers · all · %d items", len(items)),
+		message:          b.String(),
+		taskID:           first.taskID,
+		mergeable:        true,
+		targetGate:       anyTriggerGated(items),
+		legacyTaskIDs:    triggerSourceTasks(items),
+		legacyTriggerIDs: triggerSourceTriggers(items),
 		// taskDesc/taskGoal left empty: per-task headers already embedded above.
 	}
 }
@@ -827,6 +887,10 @@ func (s *Server) runTriggeredRun(item triggeredRun) {
 		}
 	}()
 	pg := s.m.pg
+	allowed, err := pg.LegacyTriggerPermitted(context.Background(), item.agentKey, triggerSourceTasks([]triggeredRun{item}), triggerSourceTriggers([]triggeredRun{item}))
+	if err != nil || !allowed {
+		return
+	}
 	c, err := pg.CreateConversationGated(item.agentKey, firstLine(item.title, 60), nil, item.targetGate)
 	if err != nil {
 		log.Printf("[trigger] create conversation for %s failed: %v", item.agentKey, err)

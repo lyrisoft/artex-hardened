@@ -49,11 +49,12 @@ func builtinToolsByAgent() map[string][]actool.CoreTool {
 		"mainagent": ts.MainAgentTools(),
 		"planner":   ts.PlannerTools(),
 		"worker":    ts.WorkerTools(),
-		// goals (the goal decomposer) binds set_goals + set_constraints by default: it
+		// goals (the goal decomposer) binds set_goals, set_constraints and
+		// add_task_scope by default on new databases: it
 		// uses them to write the decomposed goals and extracted operation constraints
 		// into the store. Shares the same managed tools with mainagent; the web UI can
 		// edit description/schema and check them per agent.
-		"goals": {ts.setGoals(), ts.setConstraints()},
+		"goals": {ts.setGoals(), ts.setConstraints(), ts.addTaskScope()},
 		// auto binds the finding-reporting + asset-management tools by default; other
 		// domain tools can be checked on demand in the UI.
 		// New databases are seeded from here; old databases are migrated by seedAutoDefaultBindings.
@@ -129,7 +130,7 @@ func BuiltinToolSeeds() []ToolSeed {
 // default inputs get injected. Tools with no matching DB row (MCP/skill/host tools
 // like traffic) pass through untouched. nil = tools unchanged. Wired in
 // server/assembly.go.
-type ToolResolveFunc func(ctx context.Context, agentKey string, tools []actool.CoreTool) []actool.CoreTool
+type ToolResolveFunc func(ctx context.Context, agentKey string, tools []actool.CoreTool) ([]actool.CoreTool, error)
 
 // Guarded like toolAugment: wiring can run while tasks assemble tools.
 var (
@@ -244,4 +245,17 @@ func scalarDefaults(schema map[string]any) map[string]json.RawMessage {
 func isEmptyJSON(raw json.RawMessage) bool {
 	s := string(raw)
 	return s == "null" || s == `""`
+}
+
+// WithNoDomainToolInjection prevents catalog and interactive-shell injection for
+// fixed-scope callers and individual call-time policy checks.
+type noDomainToolInjectionKey struct{}
+
+func WithNoDomainToolInjection(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noDomainToolInjectionKey{}, true)
+}
+
+func NoDomainToolInjection(ctx context.Context) bool {
+	v, _ := ctx.Value(noDomainToolInjectionKey{}).(bool)
+	return v
 }

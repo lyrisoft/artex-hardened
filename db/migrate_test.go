@@ -136,9 +136,9 @@ func assertEmbeddedApplied(t *testing.T, d *DB) []appliedMigration {
 	want := []struct {
 		version int
 		name    string
-	}{{1, llmRecordsMigration}, {2, llmUsageMigration}, {3, "0003_task_scope_icp_index.sql"}, {4, "0004_team_foundation.sql"}}
+	}{{1, llmRecordsMigration}, {2, llmUsageMigration}, {3, "0003_task_scope_icp_index.sql"}, {4, "0004_team_foundation.sql"}, {5, "0005_scoped_trigger_bindings.sql"}, {6, "0006_synthetic_scope_records.sql"}}
 	if len(applied) != len(want) {
-		t.Fatalf("schema_migrations = %+v, want versions 1 to 4", applied)
+		t.Fatalf("schema_migrations = %+v, want versions 1 to 6", applied)
 	}
 	for i, w := range want {
 		content, err := fs.ReadFile(migrationsFS(), w.name)

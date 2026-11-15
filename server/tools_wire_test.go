@@ -43,7 +43,7 @@ func TestWireToolsWithholdsToolsWhenCatalogUnavailable(t *testing.T) {
 	if err := pg.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if got := agent.ToolResolve()(context.Background(), "worker", base); len(got) != 0 {
+	if got, err := agent.ToolResolve()(context.Background(), "worker", base); len(got) != 0 || err == nil {
 		t.Fatalf("catalog failure exposed %d tools", len(got))
 	}
 }
@@ -82,7 +82,11 @@ func TestWireTools(t *testing.T) {
 	base := append(ts.WorkerTools(), actool.DefaultTools()...)
 	ctx := context.Background()
 
-	worker := names(agent.ToolResolve()(ctx, "worker", base))
+	workerTools, err := agent.ToolResolve()(ctx, "worker", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := names(workerTools)
 	if _, ok := worker["record_fact"]; !ok {
 		t.Error("worker lost record_fact")
 	}
@@ -95,7 +99,11 @@ func TestWireTools(t *testing.T) {
 		t.Error("Bash should pass through undecorated, but description changed")
 	}
 	// planner is not bound to record_fact → resolving a base that contains it drops it.
-	planner := names(agent.ToolResolve()(ctx, "planner", base))
+	plannerTools, err := agent.ToolResolve()(ctx, "planner", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planner := names(plannerTools)
 	if _, ok := planner["record_fact"]; ok {
 		t.Error("planner should not get record_fact (not bound)")
 	}
@@ -115,7 +123,11 @@ func TestWireTools(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	worker2 := names(agent.ToolResolve()(ctx, "worker", base))
+	workerTools2, err := agent.ToolResolve()(ctx, "worker", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker2 := names(workerTools2)
 	got := worker2["record_fact"]
 	if got == nil {
 		t.Fatal("record_fact missing after edit")

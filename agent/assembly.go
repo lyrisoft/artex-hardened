@@ -17,6 +17,7 @@ import (
 // UnlockSkill unlocks a named skill's MCPs — hosts call it to rebuild the unlock set
 // from history on a resumed session (design doc C2).
 type DeferredInfo struct {
+	toolResolve     ToolResolveFunc   // same snapshot used for assembly and per-call rechecks
 	FindingGuidance string            // derived from the final permitted tools, including DB overrides
 	Deferred        []string          // all MCP tool names (schema withheld)
 	GlobalNames     []string          // MCP names to list in the system-prompt block
@@ -56,14 +57,23 @@ func ToolAugment() ToolAugmentFunc {
 }
 
 // AugmentTools returns base plus the agent's visible skill/MCP tools, the
-// DeferredInfo, and a cleanup func the caller must defer (closes MCP clients).
-// Built-in base tools are kept as-is — never filtered (built-in tools stay at the code layer, no visibility filtering).
-func AugmentTools(ctx context.Context, agentKey string, base []actool.CoreTool) ([]actool.CoreTool, DeferredInfo, func()) {
+// DeferredInfo, a cleanup func the caller must defer (closes MCP clients),
+// and an error. The configured resolver filters known tools and decorates them.
+func AugmentTools(ctx context.Context, agentKey string, base []actool.CoreTool) ([]actool.CoreTool, DeferredInfo, func(), error) {
 	var (
 		def     DeferredInfo
 		cleanup = func() {}
 		out     = base
 	)
+	// Check the catalog before augmenting: augment may start MCP subprocesses.
+	// Keep this resolver for the full assembly so a hook swap cannot skip the
+	// second check. A failure after augmentation releases any clients.
+	resolve := ToolResolve()
+	if resolve != nil {
+		if _, err := resolve(ctx, agentKey, nil); err != nil {
+			return nil, def, cleanup, fmt.Errorf("preflight tool policy: %w", err)
+		}
+	}
 	// Copy each hook once under its lock, then call it outside the lock.
 	if augment := ToolAugment(); augment != nil {
 		var extra []actool.CoreTool
@@ -80,16 +90,27 @@ func AugmentTools(ctx context.Context, agentKey string, base []actool.CoreTool) 
 	// agent isn't bound to (or that are disabled) and swap in overridden
 	// descriptions/schemas + default injection. MCP/skill/host tools have no row
 	// and pass through untouched, so deferred/unlock wiring stays consistent.
-	if resolve := ToolResolve(); resolve != nil {
-		out = resolve(ctx, agentKey, out)
+	if resolve != nil {
+		var err error
+		out, err = resolve(ctx, agentKey, out)
+		if err != nil {
+			cleanup()
+			return nil, DeferredInfo{}, func() {}, fmt.Errorf("resolve tool policy: %w", err)
+		}
 	}
 	// Tool RAG (off by default): lexical projection of the bound list; only removes.
 	out = applyToolRAG(ctx, agentKey, out, def.Deferred, bm25Score)
 	out, def.FindingGuidance = findingWorkflowTools(agentKey, out)
+	def.toolResolve = resolve
+	// An explicit empty list must not become the SDK default tool set, even if
+	// a projection above returned nil for its empty input.
+	if out == nil {
+		out = []actool.CoreTool{}
+	}
 	for i, t := range out {
 		out[i] = guardPanic(t)
 	}
-	return out, def, cleanup
+	return out, def, cleanup, nil
 }
 
 // guardPanic turns a panicking tool handler into an ordinary tool error. The

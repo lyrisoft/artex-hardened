@@ -128,8 +128,11 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	// when the asset coverage feature is off, drop add_task_scope/list_untested_assets (not in the prompt).
 	base := append(tsx.DropCoverageTools(tsx.MainAgentTools()), actool.DefaultTools()...)
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts)})
-	tools, def, cleanup := AugmentTools(ctx, "mainagent", base)
+	tools, def, cleanup, err := AugmentTools(ctx, "mainagent", base)
 	defer cleanup()
+	if err != nil {
+		return "", err
+	}
 	// this task's working directory <workDir>/tasks/<taskID>, created up front.
 	mainDir := ensureRunDir(m.workDir, taskID, 0)
 	ctx = intercept.WithReviewWorkingDirectory(ctx, mainDir)
@@ -169,6 +172,7 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	if hooks != nil { // typed-nil guard: only set when concrete (avoids harness panic)
 		opts.Hooks = hooks
 	}
+	opts.Hooks = withToolPolicyHooks("mainagent", def.toolResolve, opts.Hooks)
 	if m.tx != nil { // persist raw human↔AI conversation; one accumulating file per segment
 		opts.Transcript = m.tx
 		// Segment 0 keeps the legacy "exp%d-main" name so existing transcripts still

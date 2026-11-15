@@ -1,6 +1,7 @@
 package server
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -94,5 +95,18 @@ func TestTaskContextHeaderTruncatesLongGoal(t *testing.T) {
 	h := taskContextHeader(72, "d", huge)
 	if len([]rune(h)) > 800 { // 200 desc + 500 goal + truncation marker/decoration, far below 5000
 		t.Fatalf("header should be bounded even for a huge goal, got %d runes", len([]rune(h)))
+	}
+}
+
+func TestTriggerMergeRetainsAllAuthorizationSources(t *testing.T) {
+	items := []triggeredRun{
+		{agentKey: "fixture", taskID: 11, legacyTaskIDs: []int64{11}, legacyTriggerIDs: []int64{101}, mergeable: true},
+		{agentKey: "fixture", taskID: 12, legacyTaskIDs: []int64{12}, legacyTriggerIDs: []int64{102}, mergeable: true},
+		{agentKey: "fixture", taskID: 11, legacyTaskIDs: []int64{11}, legacyTriggerIDs: []int64{101}, mergeable: true},
+		{agentKey: "fixture", taskID: 0, legacyTriggerIDs: []int64{103}},
+	}
+	got := mergeAllRuns(items)
+	if !reflect.DeepEqual(got.legacyTaskIDs, []int64{11, 12}) || !reflect.DeepEqual(got.legacyTriggerIDs, []int64{101, 102, 103}) {
+		t.Fatalf("merged sources tasks=%v triggers=%v", got.legacyTaskIDs, got.legacyTriggerIDs)
 	}
 }

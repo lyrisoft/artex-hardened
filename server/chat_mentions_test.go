@@ -122,6 +122,11 @@ func TestChatMentionWorkerReceivesServerDetails(t *testing.T) {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
 	defer m.Close()
+	// This fixture constructs a server directly; install its own live catalog
+	// rather than inheriting another test's resolver backed by a closed DB.
+	previousResolve, previousPolicy := agent.ToolResolve(), agent.FindingTrafficBindingEnabled()
+	wireTools(m.pg, nil)
+	defer func() { agent.SetToolResolve(previousResolve); agent.SetFindingTrafficBindingEnabled(previousPolicy) }()
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{ctx: ctx, m: m, engine: NewEngine(m)}
 	task, err := m.CreateTask("Worker mention test", "Read referenced records", nil, 0, 0)

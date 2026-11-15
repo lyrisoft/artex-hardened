@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"path/filepath"
@@ -248,13 +249,12 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 	// interactive_shell is on, so Bash points at shell_open for interactive programs
 	// without ever referencing a tool that isn't injected (§14.1/§14.2).
 	const bashInteractiveShellNote = "\n\nPrograms that need [interactive input] (msfconsole / interactive ssh login / REPLs like mysql, psql, python / password or yes/no prompts / nc reverse shells) must not use Bash (it has no stdin and would hang); open an interactive session with shell_open instead (and shell_close when done). One-shot, non-interactive commands still use Bash."
-	agent.SetToolResolve(func(ctx context.Context, agentKey string, tools []actool.CoreTool) []actool.CoreTool {
+	agent.SetToolResolve(func(ctx context.Context, agentKey string, tools []actool.CoreTool) ([]actool.CoreTool, error) {
 		rows, err := pg.ListTools()
 		if err != nil {
 			// The catalog carries enabled flags and agent bindings. Returning the
 			// original list here would turn a policy-store outage into permission.
-			log.Printf("[tools] failed to read tools table; withholding resolver input: %v", err)
-			return nil
+			return nil, fmt.Errorf("load tool policy: %w", err)
 		}
 		byKey := make(map[string]*db.Tool, len(rows))
 		for _, t := range rows {
@@ -285,7 +285,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		// and therefore never includes ToolSet-backed domain tools. Per-task instances
 		// in the base always win: inList is built from the original incoming list so a
 		// worker's own upsert_asset is never shadowed by the server-level registry copy.
-		if len(domainReg) > 0 {
+		if len(domainReg) > 0 && !agent.NoDomainToolInjection(ctx) {
 			inList := make(map[string]bool, len(tools))
 			for _, t := range tools {
 				inList[t.Name()] = true
@@ -323,7 +323,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		// web_search), NOT by tools-table binding. When on, inject the 5 shell_* tools
 		// and COUPLE the Bash description addendum so it points at shell_open — and never
 		// dangles when off. See docs/interactive-shell-design.md §14.2.
-		if !actool.InteractiveShellDisabled() {
+		if !agent.NoDomainToolInjection(ctx) && !actool.InteractiveShellDisabled() {
 			if a, err := pg.GetAgentByKey(agentKey); err == nil && a != nil && a.InteractiveShell {
 				out = append(out, actool.ShellSessionTools()...)
 				for i, t := range out {
@@ -334,7 +334,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 				}
 			}
 		}
-		return out
+		return out, nil
 	})
 }
 

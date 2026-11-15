@@ -140,7 +140,23 @@ func DecomposeGoalsWithProvider(ctx context.Context, prov llm.Provider, dataDir,
 	// a tool that isn't present.
 	if as != nil && taskID > 0 {
 		tools = append(tools, tsx.addTaskScope())
-		sys += goalsScopeTail
+	}
+	resolve := ToolResolve()
+	if resolve != nil {
+		var err error
+		tools, err = resolve(WithNoDomainToolInjection(ctx), "goals", tools)
+		if err != nil {
+			return nil // do not invoke the model on a policy-store failure
+		}
+	}
+	if tools == nil {
+		tools = []actool.CoreTool{} // nil triggers the SDK default tool set
+	}
+	for _, tool := range tools {
+		if tool.Name() == "add_task_scope" {
+			sys += goalsScopeTail
+			break
+		}
 	}
 	userMsg := "Task goal:\n" + goalText
 	if d := strings.TrimSpace(desc); d != "" {
@@ -160,6 +176,7 @@ func DecomposeGoalsWithProvider(ctx context.Context, prov llm.Provider, dataDir,
 		Tools:                  tools,
 		PermissionMode:         acperm.ModeBypass,
 		DisableBackgroundTasks: true,
+		Hooks:                  withToolPolicyHooks("goals", resolve, nil),
 		// 3 steps (extract constraints → register scope → decompose goals) each need one tool call; give enough turns so set_goals is not missed before wrap-up.
 		MaxTurns:     8,
 		NonStreaming: nonStreaming, // when this profile selects non-streaming, use Provider.Complete

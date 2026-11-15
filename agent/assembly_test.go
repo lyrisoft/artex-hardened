@@ -29,7 +29,7 @@ func TestAgentHooksConcurrentSwap(t *testing.T) {
 	augment := func(context.Context, string) ([]actool.CoreTool, DeferredInfo, func()) {
 		return nil, DeferredInfo{}, nil
 	}
-	resolve := func(_ context.Context, _ string, in []actool.CoreTool) []actool.CoreTool { return in }
+	resolve := func(_ context.Context, _ string, in []actool.CoreTool) ([]actool.CoreTool, error) { return in, nil }
 	policy := func() bool { return false }
 	text := func(string) (string, bool) { return "", false }
 	turns := func(string) (int, bool) { return 0, false }
@@ -60,8 +60,12 @@ func TestAgentHooksConcurrentSwap(t *testing.T) {
 	for range 4 {
 		wg.Go(func() {
 			for range rounds {
-				out, _, cleanup := AugmentTools(context.Background(), "worker", nil)
+				out, _, cleanup, err := AugmentTools(context.Background(), "worker", nil)
 				cleanup()
+				if err != nil {
+					t.Errorf("unexpected policy error: %v", err)
+					return
+				}
 				if len(out) != 0 {
 					t.Errorf("AugmentTools(nil base) = %d tools, want 0", len(out))
 					return

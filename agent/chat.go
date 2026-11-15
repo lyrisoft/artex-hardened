@@ -125,8 +125,11 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	// have no tools-table rows, so they always pass through.
 	base := actool.DefaultTools()
 	ctx = WithRunInfo(ctx, RunInfo{SessionID: sessionID})
-	tools, def, cleanup := AugmentTools(ctx, agentKey, base)
+	tools, def, cleanup, err := AugmentTools(ctx, agentKey, base)
 	defer cleanup()
+	if err != nil {
+		return "", err
+	}
 
 	system, boundary := deferredSystem(chatSystem(agentKey, c.workDir, sessionWorkDir), def)
 	opts := agentcore.Options{
@@ -169,6 +172,7 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	if c.guard != nil {
 		opts.Hooks = c.guard.Hooks()
 	}
+	opts.Hooks = withToolPolicyHooks(agentKey, def.toolResolve, opts.Hooks)
 	if c.tx != nil { // persist raw human↔AI conversation; one accumulating file per thread
 		opts.Transcript = c.tx
 		opts.SessionID = sessionID

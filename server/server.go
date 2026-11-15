@@ -141,13 +141,15 @@ type provEntry struct {
 // taskID + mergeable let the drainer coalesce several event triggers (finding/goal)
 // from the SAME task into one conversation before it starts (interval fires don't merge).
 type triggeredRun struct {
-	agentKey  string
-	title     string
-	message   string // event body (trigger phrase + tool/args/results etc.); no task description/goal header
-	taskID    int64  // source task for finding/goal triggers; 0 for interval/none
-	taskDesc  string // task description (task-level, same across one task); rendered once when merged
-	taskGoal  string // task goal (task-level, same across one task); rendered once when merged
-	mergeable bool   // true for finding/goal event triggers (merge by taskID)
+	agentKey         string
+	title            string
+	message          string  // event body (trigger phrase + tool/args/results etc.); no task description/goal header
+	taskID           int64   // source task for finding/goal triggers; 0 for interval/none
+	taskDesc         string  // task description (task-level, same across one task); rendered once when merged
+	taskGoal         string  // task goal (task-level, same across one task); rendered once when merged
+	legacyTaskIDs    []int64 // every source task, including cross-task merged fires
+	legacyTriggerIDs []int64 // every source trigger, rechecked after queueing
+	mergeable        bool    // true for finding/goal event triggers (merge by taskID)
 	// targetGate: the source task had the target gate on when the event fired; a
 	// merged run is gated if any of its fires is. Never carries pins.
 	targetGate bool
@@ -1609,12 +1611,12 @@ type createTaskReq struct {
 	CategoryID           *int64   `json:"category_id,omitempty"`
 	Description          string   `json:"description"`
 	Goal                 string   `json:"goal"`
-	LLMProfileID         *int64   `json:"llm_profile_id,omitempty"`    // the LLM profile to run this task on; omitted/null = use the active profile
-	LLMProfileIDs        []int64  `json:"llm_profile_ids,omitempty"`   // ordered task-level profile chain; the first entry takes effect initially
-	SourceTaskIDs        []string `json:"source_task_ids,omitempty"`   // direct, read-only inherited source tasks
-	CompanyIDs           []int64  `json:"company_ids,omitempty"`       // links the company scope and snapshots its current assets; does not copy assets or force intent generation
+	LLMProfileID         *int64   `json:"llm_profile_id,omitempty"`  // the LLM profile to run this task on; omitted/null = use the active profile
+	LLMProfileIDs        []int64  `json:"llm_profile_ids,omitempty"` // ordered task-level profile chain; the first entry takes effect initially
+	SourceTaskIDs        []string `json:"source_task_ids,omitempty"` // direct, read-only inherited source tasks
+	CompanyIDs           []int64  `json:"company_ids,omitempty"`     // links the company scope and snapshots its current assets; does not copy assets or force intent generation
 	TimeoutSeconds       int      `json:"timeout_seconds"`
-	LLMRotate            *bool    `json:"llm_rotate"`             // task-level timeout (seconds); 0/omitted = no limit
+	LLMRotate            *bool    `json:"llm_rotate"`                  // task-level timeout (seconds); 0/omitted = no limit
 	PlanHeartbeatSeconds int      `json:"plan_heartbeat_seconds"`      // planner heartbeat interval (seconds); 0/omitted = default 600 (10min); floor = default = 600, lower values are raised to 600
 	PlanQuietMode        *bool    `json:"plan_quiet_mode,omitempty"`   // planner quiet-mode switch (#86); omitted = default on; false = edge rounds always plan
 	TargetGate           *bool    `json:"target_gate,omitempty"`       // approval gate for asset targets, opt-in; omitted/null = off
