@@ -15,6 +15,12 @@ services:
     restart: unless-stopped
 
   artex:
+    # Defense in depth for an autonomous command-executing agent.
+    # This is not an egress firewall: enforce destination policy on the host/network.
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
     # Built from this checkout. The previous reference was a third-party
     # namespace whose repository is gone: whoever controls that name could
     # publish the tag this file would pull.
@@ -40,8 +46,8 @@ services:
       ARTEX_TRUSTED_PROXIES: ${ARTEX_TRUSTED_PROXIES:-}
       # Untrusted-output boundary: on by default (empty = on); ARTEX_UNTRUSTED_BOUNDARY=0 in .env
       # disables it. Cost: about 154 bytes per tool result plus one system note.
-      ARTEX_UNTRUSTED_BOUNDARY: ${ARTEX_UNTRUSTED_BOUNDARY:-}
-      ARTEX_UPDATE_CHECK: ${ARTEX_UPDATE_CHECK:-}
+      ARTEX_UNTRUSTED_BOUNDARY: ${ARTEX_UNTRUSTED_BOUNDARY:-1}
+      ARTEX_UPDATE_CHECK: ${ARTEX_UPDATE_CHECK:-0}
       # Noise profile for target requests: off (default) | quiet | balanced | aggressive.
       ARTEX_NOISE_PROFILE: ${ARTEX_NOISE_PROFILE:-}
       ARTEX_TARGET_USER_AGENT: ${ARTEX_TARGET_USER_AGENT:-}
