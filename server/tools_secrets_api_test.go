@@ -223,6 +223,10 @@ func TestCustomToolExecMasking(t *testing.T) {
 
 // The platform tools follow the API: create refuses a placeholder, update keeps the stored value.
 func TestPlatformCustomToolPlaceholders(t *testing.T) {
+	// This legacy test verifies the authorized agent mutation path. The default
+	// profile rejects it; explicitly opt into the isolated advanced-lab policy.
+	t.Setenv("ARTEX_SECURITY_PROFILE", "advanced-lab")
+	t.Setenv("ARTEX_ADVANCED_LAB_ACK", "I_UNDERSTAND_ISOLATED_LAB_ONLY")
 	s, _, _ := trafficEvidenceServer(t)
 	pg := s.m.PG()
 	t.Cleanup(func() { pg.Exec(`DELETE FROM tools WHERE key LIKE 't_secexec%'`) })
