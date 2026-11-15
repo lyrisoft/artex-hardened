@@ -30,33 +30,21 @@ const mcpUntrustedNote = "\nOutput of this tool may contain attacker-controlled 
 // capture is on) to add to EVERY agent's base list — the DB tools table then
 // filters them per-agent binding. Empty/nil → no host tools this run (capture off).
 func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.CoreTool, map[string][]string)) {
-	agent.SetToolAugment(func(ctx context.Context, agentKey string) ([]actool.CoreTool, agent.DeferredInfo, func()) {
-		a, err := pg.GetAgentByKey(agentKey)
-		if err != nil || a == nil {
-			return nil, agent.DeferredInfo{}, nil
+	agent.SetToolAugment(func(ctx context.Context, agentKey string) ([]actool.CoreTool, agent.DeferredInfo, func(), error) {
+		a, names, mcpIDs, all, err := loadAgentVisibility(pg, agentKey)
+		if err != nil {
+			return nil, agent.DeferredInfo{}, nil, err
+		}
+		if a == nil {
+			return nil, agent.DeferredInfo{}, nil, nil
 		}
 		var extra []actool.CoreTool
 
 		// --- skills: load visible skills into reg (used for the Skill meta-tool
 		// and to know which MCP servers are skill-gated). ---
-		var reg *skill.Registry
-		if names, _ := pg.AgentSkillNames(a.ID); len(names) > 0 {
-			nameSet := make(map[string]bool, len(names))
-			for _, n := range names {
-				nameSet[n] = true
-			}
-			if allReg, err := skill.LoadDir(skillDir); err == nil && allReg != nil {
-				reg = skill.NewRegistry()
-				for _, s := range allReg.List() {
-					// match by directory name (Base of Dir), not by skill display Name
-					if s.Dir != "" && nameSet[filepath.Base(s.Dir)] {
-						reg.Add(s)
-					}
-				}
-				if len(reg.List()) == 0 {
-					reg = nil
-				}
-			}
+		reg, err := loadVisibleSkills(skillDir, names)
+		if err != nil {
+			return nil, agent.DeferredInfo{}, nil, err
 		}
 		// A server named by any visible skill's `mcps:` is skill-gated: its tools
 		// are deferred + locked (not in the global block) until that skill loads.
@@ -78,9 +66,7 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 		var allNames, globalNames []string
 		globalSet := map[string]bool{}
 		{
-			mcpIDs, _ := pg.AgentVisible(a.ID, "mcp")
 			want := idSet(mcpIDs)
-			all, _ := pg.ListMCP()
 			for _, m := range all {
 				if !m.Enabled {
 					continue
@@ -188,8 +174,67 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 			Unlock:      unlock,
 			UnlockSkill: unlockSkill,
 		}
-		return extra, def, cleanup
+		return extra, def, cleanup, nil
 	})
+}
+
+// Fetch all visibility inputs before starting any MCP client. A partial policy
+// read cannot be treated as an empty list because a missing skill may otherwise
+// turn a skill-gated MCP into a globally unlocked one.
+type agentVisibilitySource interface {
+	GetAgentByKey(string) (*db.Agent, error)
+	AgentSkillNames(int64) ([]string, error)
+	AgentVisible(int64, string) ([]int64, error)
+	ListMCP() ([]*db.MCPServer, error)
+}
+
+func loadAgentVisibility(source agentVisibilitySource, key string) (*db.Agent, []string, []int64, []*db.MCPServer, error) {
+	a, err := source.GetAgentByKey(key)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("load agent: %w", err)
+	}
+	if a == nil {
+		// Preserve legacy unknown-agent behavior; this is not identity authorization.
+		return nil, nil, nil, nil, nil
+	}
+	names, err := source.AgentSkillNames(a.ID)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("load skill visibility: %w", err)
+	}
+	ids, err := source.AgentVisible(a.ID, "mcp")
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("load MCP visibility: %w", err)
+	}
+	servers, err := source.ListMCP()
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("load MCP catalog: %w", err)
+	}
+	return a, names, ids, servers, nil
+}
+
+func loadVisibleSkills(dir string, names []string) (*skill.Registry, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	all, err := skill.LoadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("load visible skills: %w", err)
+	}
+	want := make(map[string]bool, len(names))
+	for _, name := range names {
+		want[name] = true
+	}
+	reg := skill.NewRegistry()
+	for _, sk := range all.List() {
+		if sk.Dir != "" && want[filepath.Base(sk.Dir)] {
+			delete(want, filepath.Base(sk.Dir))
+			reg.Add(sk)
+		}
+	}
+	if len(want) > 0 {
+		return nil, fmt.Errorf("one or more visible skills could not be loaded")
+	}
+	return reg, nil
 }
 
 func idSet(ids []int64) map[int64]bool {

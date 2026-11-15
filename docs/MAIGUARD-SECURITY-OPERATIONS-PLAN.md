@@ -11,6 +11,8 @@ separate feature branch and PR against `main`; do not merge without authorizatio
 The [program reference](https://docs.google.com/document/d/17cRcQhk2Bm4WOQ-SVkhJOmsyo6PZXWVmZORJmhu3B3c/edit)
 is a proposal, not a grant of target access. Use disposable synthetic targets and
 records for development and tests; no customer data or production credentials.
+The [owner decision brief](PHASE1-OWNER-DECISIONS.md) recommends a minimal,
+synthetic-only pilot direction and identifies its operational approval gates.
 
 ## Baseline and design checkpoint
 
@@ -44,8 +46,11 @@ not automatically removed by MCP/skill visibility. The original tool resolver
 also passed its input through when the catalog query failed. This branch stops the
 four main agent paths and goal decomposition on a catalog failure, checks before
 MCP augmentation, and rechecks the catalog at each harness call (including SDK
-and deferred calls). Unknown legacy tools still pass the catalog check; MCP startup,
-per-team authorization and independent process isolation remain incomplete. These
+and deferred calls). Agent assembly also aborts if its visibility inputs or an
+assigned skill cannot be loaded. The SDK can silently discard malformed skill
+frontmatter, so this does not establish a reliable skill-to-MCP boundary. Unknown
+legacy tools still pass the catalog check; standalone MCP discovery, per-team
+authorization and independent process isolation remain incomplete. These
 checks do not stop a permitted shell from accessing shared files or connections.
 The program must close all of these paths before it claims isolation or enables teams.
 
@@ -312,6 +317,14 @@ is reviewed. A prior main-branch CI pass does not prove a new branch or runtime.
 
 ## Validation record
 
+- After the visibility-error change, `go test -p 1 -count=1 -timeout 180s
+  ./...` passed against a fresh synthetic PostgreSQL cluster. The first run exposed
+  fixtures using a closed visibility store, missing shipped skills, and a temporary
+  skill binding whose cleanup ran after its DB closed; the fixtures now use a live
+  store and clean up in order. The complete `go test -race -p 1 -count=1
+  -timeout 180s ./agent ./server` passed on another fresh fixture, as did
+  `go vet -p 2 ./agent ./server` and a Go build. These checks do not validate malformed skill metadata or establish
+  team isolation.
 - On this Phase 1 branch, `go test -p 1 -count=1 ./...` passed on a fresh,
   loopback-only synthetic PostgreSQL fixture after updating the migration inventory
   and a manually constructed chat-worker test to use its own live policy store.

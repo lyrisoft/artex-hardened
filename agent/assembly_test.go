@@ -26,8 +26,8 @@ func TestAgentHooksConcurrentSwap(t *testing.T) {
 		SetWrapupTaskTimeoutOverride(oldTimeout)
 		SetWrapupTaskTimeoutTurnsOverride(oldTimeoutTurns)
 	})
-	augment := func(context.Context, string) ([]actool.CoreTool, DeferredInfo, func()) {
-		return nil, DeferredInfo{}, nil
+	augment := func(context.Context, string) ([]actool.CoreTool, DeferredInfo, func(), error) {
+		return nil, DeferredInfo{}, nil, nil
 	}
 	resolve := func(_ context.Context, _ string, in []actool.CoreTool) ([]actool.CoreTool, error) { return in, nil }
 	policy := func() bool { return false }

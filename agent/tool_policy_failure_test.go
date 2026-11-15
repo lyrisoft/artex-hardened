@@ -22,9 +22,9 @@ func TestToolPolicyFailureBeforeAndAfterAugment(t *testing.T) {
 			}
 			return nil, nil
 		})
-		SetToolAugment(func(context.Context, string) ([]actool.CoreTool, DeferredInfo, func()) {
+		SetToolAugment(func(context.Context, string) ([]actool.CoreTool, DeferredInfo, func(), error) {
 			starts++
-			return actool.DefaultTools(), DeferredInfo{}, func() { closes++ }
+			return actool.DefaultTools(), DeferredInfo{}, func() { closes++ }, nil
 		})
 		got, _, cleanup, err := AugmentTools(context.Background(), "worker", actool.DefaultTools())
 		cleanup()
@@ -68,5 +68,22 @@ func TestEmptyResolvedToolsDoNotRestoreSDKDefaults(t *testing.T) {
 	defer cleanup()
 	if err != nil || tools == nil || len(tools) != 0 {
 		t.Fatalf("tools=%v err=%v", tools, err)
+	}
+}
+
+func TestVisibilityFailureStopsChatAndCleansUp(t *testing.T) {
+	oldAugment, oldResolve := ToolAugment(), ToolResolve()
+	t.Cleanup(func() { SetToolAugment(oldAugment); SetToolResolve(oldResolve) })
+	unavailable := errors.New("synthetic visibility outage")
+	SetToolResolve(func(_ context.Context, _ string, in []actool.CoreTool) ([]actool.CoreTool, error) { return in, nil })
+	cleaned, invoked := false, false
+	SetToolAugment(func(context.Context, string) ([]actool.CoreTool, DeferredInfo, func(), error) {
+		return actool.DefaultTools(), DeferredInfo{}, func() { cleaned = true }, unavailable
+	})
+	provider := captureUsageProvider{stream: func(_ context.Context, _ func(llm.StreamEvent, error) bool) { invoked = true }}
+	chat := NewChatAgent(provider, "fixture", t.TempDir(), nil, 0)
+	_, err := chat.Chat(context.Background(), "worker", "fixture", "test", 1, 0, false, nil)
+	if !errors.Is(err, unavailable) || !cleaned || invoked {
+		t.Fatalf("err=%v cleaned=%v invoked=%v", err, cleaned, invoked)
 	}
 }

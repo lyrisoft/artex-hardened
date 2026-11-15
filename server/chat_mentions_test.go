@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -124,9 +125,14 @@ func TestChatMentionWorkerReceivesServerDetails(t *testing.T) {
 	defer m.Close()
 	// This fixture constructs a server directly; install its own live catalog
 	// rather than inheriting another test's resolver backed by a closed DB.
-	previousResolve, previousPolicy := agent.ToolResolve(), agent.FindingTrafficBindingEnabled()
+	previousResolve, previousPolicy, previousAugment := agent.ToolResolve(), agent.FindingTrafficBindingEnabled(), agent.ToolAugment()
 	wireTools(m.pg, nil)
-	defer func() { agent.SetToolResolve(previousResolve); agent.SetFindingTrafficBindingEnabled(previousPolicy) }()
+	wireAgentAugment(m.pg, filepath.Join("..", "skills"), nil)
+	defer func() {
+		agent.SetToolResolve(previousResolve)
+		agent.SetFindingTrafficBindingEnabled(previousPolicy)
+		agent.SetToolAugment(previousAugment)
+	}()
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{ctx: ctx, m: m, engine: NewEngine(m)}
 	task, err := m.CreateTask("Worker mention test", "Read referenced records", nil, 0, 0)

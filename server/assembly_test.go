@@ -34,7 +34,7 @@ func TestAssembleVisibleSkill(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer pg.Close()
+	t.Cleanup(func() { _ = pg.Close() })
 
 	// Filesystem skill fixture: <skillDir>/t-assemble/SKILL.md. The directory name
 	// (t-assemble) is the visibility key matched against AgentSkillNames.
@@ -62,10 +62,17 @@ func TestAssembleVisibleSkill(t *testing.T) {
 	if err := pg.SetAgentSkillVisibility(ag.ID, nil); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = pg.SetAgentSkillVisibility(ag.ID, orig) })
+	t.Cleanup(func() {
+		if err := pg.SetAgentSkillVisibility(ag.ID, orig); err != nil {
+			t.Errorf("restore skill visibility: %v", err)
+		}
+	})
 
 	// before: skill not visible → no Skill meta-tool
-	extra, _, cleanup := agent.ToolAugment()(context.Background(), "planner")
+	extra, _, cleanup, err := agent.ToolAugment()(context.Background(), "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
 	cleanup()
 	if hasSkillTool(extra) {
 		t.Fatalf("expected no Skill meta-tool before the skill is made visible")
@@ -75,10 +82,17 @@ func TestAssembleVisibleSkill(t *testing.T) {
 	if err := pg.ToggleSkillVisibility(ag.ID, skillName, true); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = pg.ToggleSkillVisibility(ag.ID, skillName, false) })
+	t.Cleanup(func() {
+		if err := pg.ToggleSkillVisibility(ag.ID, skillName, false); err != nil {
+			t.Errorf("remove fixture skill visibility: %v", err)
+		}
+	})
 
 	// after: the Skill meta-tool is packed in
-	extra, _, cleanup = agent.ToolAugment()(context.Background(), "planner")
+	extra, _, cleanup, err = agent.ToolAugment()(context.Background(), "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer cleanup()
 	if !hasSkillTool(extra) {
 		t.Fatalf("expected the Skill meta-tool after making the skill visible")

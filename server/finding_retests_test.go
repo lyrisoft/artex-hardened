@@ -56,8 +56,8 @@ func newRetestServer(t *testing.T) (*Server, int64) {
 		t.Fatal(err)
 	}
 	oldAugment, oldResolve, oldPrompt := agent.ToolAugment(), agent.ToolResolve(), agent.PromptOverride()
-	agent.SetToolAugment(func(context.Context, string) ([]actool.CoreTool, agent.DeferredInfo, func()) {
-		return s.findingRetestTools(), agent.DeferredInfo{}, func() {}
+	agent.SetToolAugment(func(context.Context, string) ([]actool.CoreTool, agent.DeferredInfo, func(), error) {
+		return s.findingRetestTools(), agent.DeferredInfo{}, func() {}, nil
 	})
 	agent.SetToolResolve(nil)
 	agent.SetPromptOverride(func(string) (string, bool) { return agent.RetesterDefaultPrompt, true })

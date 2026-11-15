@@ -29,11 +29,12 @@ type DeferredInfo struct {
 // an agent should see beyond its built-in base set — the agent's visible skills (packed into one Skill meta-tool)
 // and visible MCP servers (expanded to mcp__server__tool). It also returns the
 // DeferredInfo describing how those MCP tools are deferred/gated. The server wires
-// it to the PG agent_visibility table. cleanup releases any spawned MCP clients.
+// it to the PG agent_visibility table. cleanup releases any spawned MCP clients;
+// a visibility error stops assembly and invokes cleanup before returning.
 //
 // When nil, agents run with only their built-in tools — behavior is unchanged
 // until a user assigns a skill/MCP to the agent in the UI.
-type ToolAugmentFunc func(ctx context.Context, agentKey string) (extra []actool.CoreTool, def DeferredInfo, cleanup func())
+type ToolAugmentFunc func(ctx context.Context, agentKey string) (extra []actool.CoreTool, def DeferredInfo, cleanup func(), err error)
 
 // The hook is set by server wiring while restored tasks may already be
 // assembling tools on other goroutines, so every access goes through the lock.
@@ -78,9 +79,14 @@ func AugmentTools(ctx context.Context, agentKey string, base []actool.CoreTool) 
 	if augment := ToolAugment(); augment != nil {
 		var extra []actool.CoreTool
 		var cl func()
-		extra, def, cl = augment(ctx, agentKey)
+		var err error
+		extra, def, cl, err = augment(ctx, agentKey)
 		if cl != nil {
 			cleanup = cl
+		}
+		if err != nil {
+			cleanup()
+			return nil, DeferredInfo{}, func() {}, fmt.Errorf("augment tool visibility: %w", err)
 		}
 		if len(extra) > 0 {
 			out = append(append([]actool.CoreTool{}, base...), extra...)
