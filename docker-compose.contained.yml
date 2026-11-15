@@ -27,6 +27,7 @@ services:
     environment:
       ARTEX_TARGET_CIDRS: ${ARTEX_TARGET_CIDRS:?Set approved IPv4 CIDRs}
       ARTEX_PG_IP: ${ARTEX_PG_IP:-172.30.137.10}
+      ARTEX_BROKER_IP: ${ARTEX_BROKER_IP:-}
       ARTEX_ALLOW_DNS: ${ARTEX_ALLOW_DNS:-0}
     networks: [contained]
     depends_on:

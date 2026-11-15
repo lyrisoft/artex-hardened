@@ -31,6 +31,14 @@ ip6tables -A OUTPUT -o lo -d ::1/128 -j ACCEPT
 iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 ip6tables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 iptables -A OUTPUT -d "$PG_IP/32" -p tcp --dport 5432 -j ACCEPT
+# Separately managed model proxy; agent receives a scoped client token, never cloud key.
+if [ -n "${ARTEX_BROKER_IP:-}" ]; then
+  python3 - <<'PY'
+import ipaddress,os
+ipaddress.IPv4Address(os.environ["ARTEX_BROKER_IP"])
+PY
+  iptables -A OUTPUT -d "$ARTEX_BROKER_IP/32" -p tcp --dport 8899 -j ACCEPT
+fi
 OLDIFS="$IFS"; IFS=,
 for cidr in $ARTEX_TARGET_CIDRS; do
   cidr="$(echo "$cidr" | tr -d '[:space:]')"

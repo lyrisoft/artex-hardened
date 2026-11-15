@@ -25,4 +25,18 @@ jobs:
           ARTEX_ADVANCED_LAB_ACK: I_UNDERSTAND_ISOLATED_LAB_ONLY
         run: |
           docker compose -f docker-compose.yml -f docker-compose.isolated.yml config --quiet
+          python3 -m unittest discover -s security/network-guard -p "test_*.py"
+          python3 -m unittest discover -s security/llm-broker -p "test_*.py"
+          python3 -m py_compile security/llm-broker/broker.py
           docker compose -f docker-compose.yml -f docker-compose.isolated.yml config --format json | python3 -c 'import json,sys; d=json.load(sys.stdin); s=d["services"]; assert "artex_lab" in s["artex"]["networks"]; assert "artex_lab" in s["postgres"]["networks"]; assert d["networks"]["artex_lab"]["internal"] is True'
+      - name: Validate contained deployment and cloud model overlay
+        env:
+          POSTGRES_PASSWORD: test-only
+          ARTEX_TARGET_CIDRS: 192.0.2.0/24
+          ARTEX_BROKER_CLIENT_TOKEN: ci-placeholder-string-very-long-not-secret
+        run: |
+          mkdir -p secrets
+          printf 'ci-placeholder-key-never-deploy\n' > secrets/openai_api_key
+          docker compose -f docker-compose.contained.yml config --quiet
+          docker compose -f docker-compose.contained.yml -f docker-compose.cloud-llm.yml config --quiet
+          docker compose -f docker-compose.contained.yml -f docker-compose.cloud-llm.yml config --format json | python3 scripts/check-contained-security.py
