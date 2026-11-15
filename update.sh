@@ -15,7 +15,10 @@ ask(){  local p="$1" d="${2:-}" a; read -rp "$p${d:+ [$d]}: " a; echo "${a:-$d}"
 # ── Optional: sync the repo to the latest code (compose/scripts/local build sources all update through it) ───────
 sync_repo(){
   [ -d .git ] && command -v git >/dev/null 2>&1 || { warn "not a git working copy, skipping git pull"; return; }
-  [ "$(ask 'Pull the latest code (git pull --ff-only)? (y/n)' y)" = y ] || return
+  [ "$(ask 'Pull unreviewed remote code into the installed checkout? (y/n)' n)" = y ] || { info "Keeping local reviewed revision"; return; }
+  [ "$(git branch --show-current)" != "main" ] || warn "You are updating main directly; prefer a reviewed release commit"
+  git diff --quiet && git diff --cached --quiet || die "working tree contains changes; refusing automatic pull"
+  info "Before pull: $(git rev-parse HEAD)"
   if ! git pull --ff-only; then
     # Continuing would rebuild the OLD tree and still print "Build complete":
     # exactly the silent stale upgrade this script exists to prevent.
@@ -28,6 +31,7 @@ sync_repo(){
 RECOVER
     die "aborting: nothing was rebuilt"
   fi
+  info "After pull: $(git rev-parse HEAD)"
 }
 
 # ── (1) Docker update ───────────────────────────────
