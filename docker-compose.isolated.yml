@@ -1,0 +1,20 @@
+# Optional *air-gapped Docker network* for disposable local lab targets.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.isolated.yml up -d --build
+# Attach ONLY disposable target containers to artex_lab with their own Compose config.
+# ARTEX cannot access internet LLM APIs or arbitrary external targets in this mode;
+# place a local LLM inside the network or use a separately firewall-controlled gateway.
+# Docker isolation does not replace a dedicated VM for hostile exploit workloads.
+services:
+  postgres:
+    networks:
+      - artex_lab
+  artex:
+    networks:
+      - artex_lab
+    environment:
+      ARTEX_SECURITY_PROFILE: advanced-lab
+      ARTEX_ADVANCED_LAB_ACK: ${ARTEX_ADVANCED_LAB_ACK:?Set ARTEX_ADVANCED_LAB_ACK=I_UNDERSTAND_ISOLATED_LAB_ONLY after reviewing the isolated-lab threat model}
+
+networks:
+  artex_lab:
+    internal: true

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/securityprofile"
 	actool "github.com/Autumn-27/norma/tool"
 )
 
@@ -52,6 +53,9 @@ func (s *Server) toolDeleteAssetsByHost() actool.CoreTool {
 			"host": strParam("The host to delete: domain/subdomain/IP. Exact match, e.g. example.com, a.example.com, or 1.2.3.4"),
 		}, "host"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if !securityprofile.AgentMayRemoveAssets() {
+				return actool.Errorf("platform mutation is disabled for autonomous agents in ARTEX_SECURITY_PROFILE; use the authenticated administrator interface or explicitly select advanced-lab on an isolated disposable network"), nil
+			}
 			as := s.assetStore()
 			if as == nil {
 				return actool.Errorf("asset library not initialized"), nil
@@ -90,6 +94,9 @@ func (s *Server) toolCreateSkill() actool.CoreTool {
 			"instructions": strParam("Markdown body instructions (optional)"),
 		}, "name", "description"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if !securityprofile.AgentMayMutatePlatform() {
+				return actool.Errorf("platform mutation is disabled for autonomous agents in ARTEX_SECURITY_PROFILE; use the authenticated administrator interface or explicitly select advanced-lab on an isolated disposable network"), nil
+			}
 			var a struct{ Name, Description, Instructions string }
 			_ = json.Unmarshal(in, &a)
 			if !validSkillName(a.Name) {
@@ -132,6 +139,9 @@ func (s *Server) toolUpdateSkillFile() actool.CoreTool {
 			"content": strParam("full file content"),
 		}, "name", "content"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if !securityprofile.AgentMayMutatePlatform() {
+				return actool.Errorf("platform mutation is disabled for autonomous agents in ARTEX_SECURITY_PROFILE; use the authenticated administrator interface or explicitly select advanced-lab on an isolated disposable network"), nil
+			}
 			var a struct{ Name, File, Content string }
 			_ = json.Unmarshal(in, &a)
 			if !validSkillName(a.Name) {
@@ -201,6 +211,9 @@ func (s *Server) toolCreateCustomTool() actool.CoreTool {
 	return wrTool("create_custom_tool", "[Important] When installing tools the platform does not have, call this tool to put the installed tool into the platform so the platform can call it! Creates a custom tool (shell/command/script/http). shell = a bash environment declaration, needing only key+description+agents, no exec/schema.",
 		customToolSchema("tool key (starts with a lowercase letter; letters/digits/underscores)"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if !securityprofile.AgentMayMutatePlatform() {
+				return actool.Errorf("platform mutation is disabled for autonomous agents in ARTEX_SECURITY_PROFILE; use the authenticated administrator interface or explicitly select advanced-lab on an isolated disposable network"), nil
+			}
 			var a customToolToolInput
 			_ = json.Unmarshal(in, &a)
 			a.Key = strings.TrimSpace(a.Key)
@@ -231,6 +244,9 @@ func (s *Server) toolUpdateCustomTool() actool.CoreTool {
 	return wrTool("update_custom_tool", "Update an existing custom tool (by key).",
 		customToolSchema("the key of the custom tool to modify"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if !securityprofile.AgentMayMutatePlatform() {
+				return actool.Errorf("platform mutation is disabled for autonomous agents in ARTEX_SECURITY_PROFILE; use the authenticated administrator interface or explicitly select advanced-lab on an isolated disposable network"), nil
+			}
 			var a customToolToolInput
 			_ = json.Unmarshal(in, &a)
 			existing, _ := s.m.pg.GetTool(a.Key)
@@ -355,6 +371,9 @@ func (s *Server) toolCreateMCP() actool.CoreTool {
 	return wrTool("create_mcp", "Create an MCP server (stdio/http/sse). Its tools must be authorized per agent visibility after creation.",
 		mcpSchema(false),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if !securityprofile.AgentMayMutatePlatform() {
+				return actool.Errorf("platform mutation is disabled for autonomous agents in ARTEX_SECURITY_PROFILE; use the authenticated administrator interface or explicitly select advanced-lab on an isolated disposable network"), nil
+			}
 			var a mcpToolInput
 			_ = json.Unmarshal(in, &a)
 			a.ID = 0
@@ -373,6 +392,9 @@ func (s *Server) toolUpdateMCP() actool.CoreTool {
 	return wrTool("update_mcp", "Update an existing MCP server (by id).",
 		mcpSchema(true),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if !securityprofile.AgentMayMutatePlatform() {
+				return actool.Errorf("platform mutation is disabled for autonomous agents in ARTEX_SECURITY_PROFILE; use the authenticated administrator interface or explicitly select advanced-lab on an isolated disposable network"), nil
+			}
 			var a mcpToolInput
 			_ = json.Unmarshal(in, &a)
 			if a.ID == 0 {
