@@ -12,6 +12,7 @@ fi
 suffix="$(python3 -c 'import secrets; print(secrets.token_hex(8))')"
 network="artex-team-fixture-${suffix}"
 image="artex-team-fixture:${suffix}"
+scanner_image="artex-fixture-scanner:${suffix}"
 target_a="${network}-a"
 target_b="${network}-b"
 guard_a="${network}-red"
@@ -26,13 +27,14 @@ cleanup() {
   fi
   docker rm -f "$guard_a" "$guard_b" "$target_a" "$target_b" >/dev/null 2>&1 || true
   docker network rm "$network" >/dev/null 2>&1 || true
-  docker image rm "$image" >/dev/null 2>&1 || true
+  docker image rm "$image" "$scanner_image" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
 docker pull nginx:alpine >/dev/null
 docker pull curlimages/curl:8.16.0 >/dev/null
 docker build -f security/fixture-team-guard/Dockerfile -t "$image" . >/dev/null
+docker build -f security/fixture-scanner/Dockerfile -t "$scanner_image" . >/dev/null
 stage="fixture targets"
 docker network create --internal --ipv6 --subnet 172.30.139.0/24 --subnet fd42:2f77:9c32::/64 "$network" >/dev/null
 docker run -d --name "$target_a" --network "$network" --ip 172.30.139.20 nginx:alpine >/dev/null
@@ -91,6 +93,23 @@ expect_denied "$guard_b" 'http://172.30.139.20:80/'
 expect_denied "$guard_a" 'http://172.30.139.20:81/'
 expect_denied "$guard_a" 'http://[fd42:2f77:9c32::21]:80/'
 
+stage="synthetic Bash and scanner control"
+# This shows a non-root TCP-connect scan and Bash/curl can reach the approved
+# fixture under the Red namespace. It is not an ARTEX agent or browser run.
+scan_result="$(docker run --rm --network "container:$guard_a" --user 65532:65532 \
+  --cap-drop ALL --security-opt no-new-privileges:true --read-only \
+  --tmpfs '/tmp:rw,nosuid,nodev,noexec,size=16m,uid=65532,gid=65532' \
+  --pids-limit 64 --memory 128m --cpus 0.5 "$scanner_image" -c '
+    set -eu
+    test "$(id -u)" = 65532
+    nmap -sT -Pn -n --max-retries 0 -p 80 172.30.139.20
+    curl --noproxy "*" -fsS http://172.30.139.20:80/ >/dev/null
+  ')"
+if ! printf '%s\n' "$scan_result" | grep -Eq '^80/tcp[[:space:]]+open'; then
+  echo "FAIL: synthetic TCP-connect scanner did not observe the allowed fixture" >&2
+  exit 1
+fi
+
 stage="invalid endpoint rejection"
 if docker run --rm --network "$network" --cap-drop ALL --cap-add NET_ADMIN \
   --security-opt no-new-privileges:true --read-only --tmpfs '/run:rw,nosuid,nodev,noexec,size=1m' \
@@ -99,4 +118,4 @@ if docker run --rm --network "$network" --cap-drop ALL --cap-add NET_ADMIN \
   echo "FAIL: broad invalid endpoint accepted" >&2
   exit 1
 fi
-echo "PASS: separate fixture guards enforced exact IPv4 address and TCP port; IPv6 denied"
+echo "PASS: separate fixture guards enforced exact IPv4 address and TCP port; IPv6 denied; Bash and TCP scanner reached the allowed fixture"

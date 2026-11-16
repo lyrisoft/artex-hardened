@@ -165,7 +165,8 @@ The program must close all of these paths before it claims isolation or enables 
 - A disposable CI-only team guard fixture installs default-deny IPv4/IPv6 rules
   and exact private IPv4/TCP endpoint pairs in two separate network namespaces.
   Its live controls compare Red and Blue fixture access, unauthorized ports and
-  IPv6. The fixture accepts a local test environment variable; it does not verify
+  IPv6, and attempt a non-root Bash and TCP-connect scanner control. The fixture
+  accepts a local test environment variable; it does not verify
   an approved manifest, attest a safe host, mediate runtime execution, or prove
   a target is synthetic. It is not wired to the application and must not be used
   as the production egress service. A separately administered, authenticated
@@ -487,9 +488,10 @@ is reviewed. A prior main-branch CI pass does not prove a new branch or runtime.
 - The disposable team-guard parser and fail-closed rule ordering passed four
   local Python unit tests; `bash -n scripts/test-team-egress-fixture.sh` passed,
   and its disposable-host acknowledgement denied an ordinary local invocation.
-  Docker is unavailable locally; the real two-team network test result is
-  recorded in the corresponding GitHub Actions run. This is a fixture, not a
-  deployed team egress service or a scanner/browser acceptance test.
+  Docker is unavailable locally; the real two-team network and scanner fixture
+  results are recorded in the corresponding GitHub Actions run. This is a fixture,
+  not a deployed team egress service, ARTEX agent run, browser test or acceptance
+  of scanner/evidence parity.
 - After migration 0009, `go build -p 2 ./...`, `go vet -p 2 ./...`,
   `go test -p 1 -count=1 -timeout 240s ./...`, and
   `go test -race -p 1 -count=1 -timeout 240s ./db ./server` passed using fresh
