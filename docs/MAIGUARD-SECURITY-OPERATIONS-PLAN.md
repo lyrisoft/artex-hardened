@@ -181,11 +181,14 @@ The program must close all of these paths before it claims isolation or enables 
   distinct team policy references). It does not launch, attest or isolate a real
   executor, verify an egress broker, or make a target safe. All execution remains
   legacy and shared-process until an owner-approved isolated executor is implemented.
-- Existing evidence-body reads now verify and return the same open file handle,
-  closing a path-replacement window between verification and delivery. The
-  verifier checks the expected length and hash and bounds its read. A process
-  that can write the same inode can still alter bytes after verification; this
-  does not replace independently controlled, tamper-evident evidence custody.
+- Evidence-body reads verify the complete length and digest, retain the opened
+  handle, and recheck bounded private chunks before returning bytes. Path swaps
+  and in-place mutation after verification cannot substitute bytes in a read;
+  mutation can still interrupt a download or destroy the stored evidence. This
+  does not protect metadata or a forged hash and is not independently controlled
+  evidence custody. `OpenBody` now returns `*VerifiedBody` (Read, ReadAt, Seek and
+  Close) rather than `*os.File`; Go integrations using file-descriptor methods
+  need updating. A download holds one 256 KiB chunk plus 32 bytes per chunk.
 - A disposable CI-only team guard fixture installs default-deny IPv4/IPv6 rules
   and exact private IPv4/TCP endpoint pairs in two separate network namespaces.
   Its live controls compare Red and Blue fixture access, unauthorized ports and
@@ -472,6 +475,13 @@ is reviewed. A prior main-branch CI pass does not prove a new branch or runtime.
 
 ## Validation record
 
+- Focused `go test -race -p 1 -count=1 ./evidence -run ...` passed after
+  adding chunk-verified reads. Tests replace a path, alter a file in place before
+  and during delivery, verify partial cross-chunk reads, seek and read concurrently.
+  `go build -p 2 ./...`, `go vet -p 2 ./...`, `go test -p 1 -count=1
+  -timeout 240s ./...`, and `go test -race -p 1 -count=1 -timeout 240s
+  ./evidence ./server` passed using fresh synthetic PostgreSQL databases. These
+  checks do not establish independent custody or protect altered metadata.
 - After migration 0011, `go test -race -p 1 -count=1 -timeout 180s ./db
   -run ...` passed on fresh loopback-only PostgreSQL. Concurrent transactions
   tested scope, grant, identity, workspace, team, tenant and task invalidations;

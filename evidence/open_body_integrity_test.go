@@ -31,25 +31,23 @@ func TestOpenVerifiedEvidenceDoesNotReopenReplacedPath(t *testing.T) {
 	if err := os.WriteFile(path, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	f, err := openVerifiedFile(path, hash, int64(len(original)), func(open *os.File, want string, length int64) error {
-		if err := verifyOpenFile(open, want, length); err != nil {
-			return err
-		}
-		if err := os.Rename(path, path+".replaced"); err != nil {
-			return err
-		}
-		return os.WriteFile(path, []byte("synthetic replacement"), 0o600)
-	})
+	store := New(nil, nil, dir)
+	snapshot := db.TrafficEvidenceSnapshot{RespHash: hash, RespLen: int64(len(original))}
+	f, _, err := store.OpenBody(snapshot, "response")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer f.Close()
+	if err := os.Rename(path, path+".replaced"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("synthetic replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	got, err := io.ReadAll(f)
 	if err != nil || !bytes.Equal(got, original) {
 		t.Fatalf("returned unverified replacement: %q err=%v", got, err)
 	}
-	store := New(nil, nil, dir)
-	snapshot := db.TrafficEvidenceSnapshot{RespHash: hash, RespLen: int64(len(original))}
 	if reopened, _, err := store.OpenBody(snapshot, "response"); err == nil {
 		reopened.Close()
 		t.Fatal("subsequent open accepted tampered evidence")

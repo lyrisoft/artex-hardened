@@ -41,10 +41,8 @@ func hashPath(dir, hash string) (string, error) {
 	return filepath.Join(dir, "blobs", hash[:2], hash+".bin"), nil
 }
 
-// verifyOpenFile checks and rewinds one already-open file. A caller must retain
-// this handle for subsequent reads; reopening the path would allow a file swap
-// after verification. This does not stop in-place writes by a process that can
-// modify the same inode; independent evidence custody is still required.
+// verifyOpenFile checks and rewinds one already-open file. It is used for
+// existing on-disk blob checks; a later read needs its own integrity protection.
 func verifyOpenFile(f *os.File, hash string, length int64) error {
 	if f == nil || length < 0 || length == math.MaxInt64 {
 		return errors.New("invalid evidence body")
@@ -78,20 +76,6 @@ func verifyFile(path, hash string, length int64) error {
 	}
 	defer f.Close()
 	return verifyOpenFile(f, hash, length)
-}
-
-// openVerifiedFile returns the very handle passed to verify. The small verifier
-// seam makes path replacement between verification and return testable.
-func openVerifiedFile(path, hash string, length int64, verify func(*os.File, string, int64) error) (*os.File, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	if err := verify(f, hash, length); err != nil {
-		_ = f.Close()
-		return nil, err
-	}
-	return f, nil
 }
 
 // A new body becomes visible only after a durable write. Failed SQL commits may
@@ -270,8 +254,8 @@ func (s *Store) WithBinding(ctx context.Context, findingID, bindingID int64, fn 
 // large download (or a slow client) holding WithEvidenceTx would block every
 // evidence write process-wide. Reading the blob afterwards is safe — blobs are
 // content-addressed and GC only reaps unreferenced files after a 24h grace
-// period. OpenBody verifies and returns the same handle, which survives path
-// replacement; it cannot prevent in-place mutation by a process with write access.
+// period. OpenBody verifies the body and rechecks each private chunk before
+// returning bytes. Independent storage and metadata custody are still required.
 func (s *Store) Binding(ctx context.Context, findingID, bindingID int64) (db.FindingTrafficBinding, error) {
 	var out db.FindingTrafficBinding
 	err := s.WithBinding(ctx, findingID, bindingID, func(b db.FindingTrafficBinding) error {
@@ -282,7 +266,7 @@ func (s *Store) Binding(ctx context.Context, findingID, bindingID int64) (db.Fin
 }
 
 // OpenBody may be called without holding the evidence lock; see Binding.
-func (s *Store) OpenBody(snapshot db.TrafficEvidenceSnapshot, side string) (*os.File, int64, error) {
+func (s *Store) OpenBody(snapshot db.TrafficEvidenceSnapshot, side string) (*VerifiedBody, int64, error) {
 	hash, length := snapshot.ReqHash, snapshot.ReqLen
 	if side == "response" {
 		hash, length = snapshot.RespHash, snapshot.RespLen
@@ -293,7 +277,7 @@ func (s *Store) OpenBody(snapshot db.TrafficEvidenceSnapshot, side string) (*os.
 	if err != nil {
 		return nil, 0, err
 	}
-	f, err := openVerifiedFile(path, hash, length, verifyOpenFile)
+	f, err := openVerifiedBody(path, hash, length)
 	if err != nil {
 		return nil, 0, err
 	}
