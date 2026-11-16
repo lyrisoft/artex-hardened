@@ -70,10 +70,13 @@ The program must close all of these paths before it claims isolation or enables 
   one-time state and nonce, an explicit HTTPS provider-origin allowlist and
   short-lived opaque server-side sessions. It resolves only already-provisioned
   humans and rechecks their revocation generation on each request. A separate
-  read-only team handler exposes only scoped workspace and task summaries; it
-  has no fallback to the legacy API and checks membership and generation in the
-  same query as each read. Neither component is mounted by the current server.
-  It does not provide task execution, secrets, evidence, approvals, a frontend,
+  team handler exposes scoped workspace/task summaries and inert synthetic scope
+  proposal and two-person decision routes; it has no fallback to the legacy API
+  and checks membership and generation in the corresponding database operation.
+  Its constructor binds authentication and scoped queries to the same identity
+  store, avoiding principal-ID collisions across unrelated databases. Neither
+  component is mounted by the current server. It does not provide task
+  execution, secrets, evidence, executable authorization, a frontend,
   provider-side revocation, or tenant isolation from the shared legacy process.
   Sessions are in memory and do not survive restart. Per-client login rate limits,
   provider configuration, independent deployment and security review remain. The
@@ -295,6 +298,25 @@ scope bytes are not rewritten; version-1 validation denies incompatible earlier
 scope documents. An authorized operator must submit and obtain independent approval
 for a new document after reviewing target ownership and fixture inventory.
 
+The separate, unmounted team handler offers the following scoped API operations.
+All POSTs require an authenticated human session and the exact configured Origin;
+unauthorized and missing records use the same generic denial. These endpoints do
+not dispatch work or configure a network:
+
+| Operation | Purpose |
+| --- | --- |
+| `POST /team/api/workspaces/{workspace}/tasks/{task}/scope-proposals` | An operator submits `valid_from`, `valid_until` and the version-1 document. |
+| `GET /team/api/workspaces/{workspace}/scope-proposals/{proposal}` | The requester or a distinct workspace approver receives the exact stored bytes and headers containing task, requester, time window, document digest and decision digest. |
+| `POST /team/api/workspaces/{workspace}/scope-proposals/{proposal}/approve` | A distinct approver submits `decision_sha256`; the transaction verifies the displayed decision context before recording it. |
+| `POST /team/api/workspaces/{workspace}/scope-proposals/{proposal}/revoke` | A workspace approver appends a reason and revocation. |
+
+The domain-separated decision digest binds the proposal, workspace, task,
+requester, validity window and document digest. It is a comparison value, not a
+signature or independent evidence custody. A privileged database owner can bypass
+the current triggers; future execution must recheck revocation and independent
+inventory at the point of use. Provisioned IdP governance must ensure two subjects
+represent distinct people; separate subject strings alone cannot prove that.
+
 A version-1 fixture document has the following shape. Each method is separately
 allowed per endpoint; this is not permission to run it:
 
@@ -431,6 +453,13 @@ is reviewed. A prior main-branch CI pass does not prove a new branch or runtime.
   -timeout 180s ./agent ./server` passed on another fresh fixture, as did
   `go vet -p 2 ./agent ./server` and a Go build. Those earlier checks did not
   validate malformed skill metadata or establish team isolation.
+- After adding the unmounted two-person scope routes and binding the OIDC
+  resolver to the same database as the handler, `go build -p 2 ./...`,
+  `go vet -p 2 ./...`, `go test -p 1 -count=1 -timeout 240s ./...`, and
+  `go test -race -p 1 -count=1 -timeout 240s ./db ./server` passed on fresh
+  synthetic PostgreSQL databases. A fake TLS IdP exercised two distinct users,
+  exact proposal review, decision replay, wrong workspace, self-approval,
+  revocation and stale-session denial. These tests do not activate an executor.
 - After the exact-target and generation-check changes, `go build -p 2 ./...`,
   `go vet -p 2 ./...`, `go test -p 1 -count=1 -timeout 240s ./...`, and
   `go test -race -p 1 -count=1 -timeout 240s ./db ./server

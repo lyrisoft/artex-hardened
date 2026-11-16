@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"time"
@@ -19,7 +20,7 @@ import (
 type SyntheticScope struct {
 	ID, WorkspaceID, TaskID, RequesterID, ApproverID int64
 	Document                                         []byte
-	SHA256                                           [sha256.Size]byte
+	SHA256, DecisionSHA256                           [sha256.Size]byte
 	ValidFrom, ValidUntil                            time.Time
 }
 
@@ -63,11 +64,12 @@ RETURNING id`, requesterID, workspaceID, taskID, document, digest[:], from, unti
 	return id, nil
 }
 
-// ApproveSyntheticScope records the decision of a distinct, currently authorized
-// human approver. approverID and authEpoch must come from that person's verified
-// session. It cannot safely be called using an agent-supplied ID or the legacy shared login.
-func (d *DB) ApproveSyntheticScope(ctx context.Context, approverID, authEpoch, proposalID int64) error {
-	if ctx == nil || d == nil || d.DB == nil || approverID <= 0 || authEpoch <= 0 || proposalID <= 0 {
+// ApproveSyntheticScope records a distinct human's decision for the exact
+// decision digest shown in a specific workspace. It binds the exact document,
+// task, requester and validity window. The actor ID and generation must come
+// from a verified human session, never an agent or the shared legacy login.
+func (d *DB) ApproveSyntheticScope(ctx context.Context, approverID, authEpoch, workspaceID, proposalID int64, expectedDecision [sha256.Size]byte) error {
+	if ctx == nil || d == nil || d.DB == nil || approverID <= 0 || authEpoch <= 0 || workspaceID <= 0 || proposalID <= 0 {
 		return ErrWorkspaceAccessDenied
 	}
 	tx, err := d.BeginTx(ctx, nil)
@@ -93,10 +95,11 @@ JOIN security_team_memberships requester_m ON requester_m.id=proposal.requester_
  AND requester_m.valid_from <= statement_timestamp() AND (requester_m.expires_at IS NULL OR requester_m.expires_at > statement_timestamp())
 JOIN security_workspace_tasks wt ON wt.workspace_id=w.id AND wt.task_id=proposal.task_id
 JOIN tasks t ON t.id=wt.task_id AND t.deleted_at IS NULL
-WHERE proposal.id=$2 AND p.id=$1 AND p.auth_epoch=$3 AND proposal.requester_id<>p.id AND proposal.valid_until > statement_timestamp()
+WHERE proposal.id=$2 AND p.id=$1 AND p.auth_epoch=$3 AND w.id=$4
+ AND proposal.requester_id<>p.id AND proposal.valid_until > statement_timestamp()
  AND NOT EXISTS(SELECT 1 FROM security_scope_revocations r WHERE r.proposal_id=proposal.id)
-RETURNING proposal_id`, approverID, proposalID, authEpoch).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
+RETURNING proposal_id`, approverID, proposalID, authEpoch, workspaceID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) || isScopeConflict(err) {
 		return ErrWorkspaceAccessDenied
 	}
 	if err != nil {
@@ -105,12 +108,19 @@ RETURNING proposal_id`, approverID, proposalID, authEpoch).Scan(&id)
 	// Validate the exact persisted bytes and digest before committing the new
 	// decision. This also denies pre-existing malformed proposals. The row lock
 	// does not replace independently administered approval storage.
-	var document, hash []byte
-	if err := tx.QueryRowContext(ctx, `SELECT document,document_sha256 FROM security_scope_proposals WHERE id=$1 FOR SHARE`, id).Scan(&document, &hash); err != nil {
+	var scope SyntheticScope
+	var hash []byte
+	if err := tx.QueryRowContext(ctx, `SELECT id,workspace_id,task_id,requester_id,document,document_sha256,valid_from,valid_until FROM security_scope_proposals WHERE id=$1 FOR SHARE`, id).
+		Scan(&scope.ID, &scope.WorkspaceID, &scope.TaskID, &scope.RequesterID, &scope.Document, &hash, &scope.ValidFrom, &scope.ValidUntil); err != nil {
 		return fmt.Errorf("approve synthetic scope: load document: %w", err)
 	}
-	digest := sha256.Sum256(document)
-	if len(hash) != sha256.Size || subtle.ConstantTimeCompare(hash, digest[:]) != 1 || syntheticpolicy.Validate(document) != nil {
+	digest := sha256.Sum256(scope.Document)
+	if len(hash) != sha256.Size || subtle.ConstantTimeCompare(hash, digest[:]) != 1 || syntheticpolicy.Validate(scope.Document) != nil {
+		return ErrWorkspaceAccessDenied
+	}
+	scope.SHA256 = digest
+	decision := scopeDecisionDigest(scope)
+	if subtle.ConstantTimeCompare(decision[:], expectedDecision[:]) != 1 {
 		return ErrWorkspaceAccessDenied
 	}
 	if err := tx.Commit(); err != nil {
@@ -122,8 +132,8 @@ RETURNING proposal_id`, approverID, proposalID, authEpoch).Scan(&id)
 // RevokeSyntheticScope appends a revocation. A currently authorized human
 // approver must initiate it with the verified session generation. Active executor
 // interruption is not implemented.
-func (d *DB) RevokeSyntheticScope(ctx context.Context, revokerID, authEpoch, proposalID int64, reason string) error {
-	if ctx == nil || d == nil || d.DB == nil || revokerID <= 0 || authEpoch <= 0 || proposalID <= 0 || len(reason) == 0 || len(reason) > 4096 {
+func (d *DB) RevokeSyntheticScope(ctx context.Context, revokerID, authEpoch, workspaceID, proposalID int64, reason string) error {
+	if ctx == nil || d == nil || d.DB == nil || revokerID <= 0 || authEpoch <= 0 || workspaceID <= 0 || proposalID <= 0 || len(reason) == 0 || len(reason) > 4096 {
 		return ErrWorkspaceAccessDenied
 	}
 	var id int64
@@ -136,14 +146,59 @@ JOIN security_tenants tenant ON tenant.id=w.tenant_id AND tenant.enabled
 JOIN security_team_memberships m ON m.team_id=team.id AND m.role='approver' AND m.revoked_at IS NULL
  AND m.valid_from <= statement_timestamp() AND (m.expires_at IS NULL OR m.expires_at > statement_timestamp())
 JOIN security_principals p ON p.id=m.principal_id AND m.principal_auth_epoch=p.auth_epoch AND p.kind='human' AND p.enabled
-WHERE proposal.id=$2 AND p.id=$1 AND p.auth_epoch=$4 RETURNING proposal_id`, revokerID, proposalID, reason, authEpoch).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
+WHERE proposal.id=$2 AND p.id=$1 AND p.auth_epoch=$4 AND w.id=$5 RETURNING proposal_id`, revokerID, proposalID, reason, authEpoch, workspaceID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) || isScopeConflict(err) {
 		return ErrWorkspaceAccessDenied
 	}
 	if err != nil {
 		return fmt.Errorf("revoke synthetic scope: %w", err)
 	}
 	return nil
+}
+
+// ProposedSyntheticScope returns exact persisted bytes to the original requester
+// or a distinct current human approver in the same workspace. It is read-only
+// and conveys no execution permission. Identity and generation must be verified.
+func (d *DB) ProposedSyntheticScope(ctx context.Context, readerID, authEpoch, workspaceID, proposalID int64) (*SyntheticScope, error) {
+	if ctx == nil || d == nil || d.DB == nil || readerID <= 0 || authEpoch <= 0 || workspaceID <= 0 || proposalID <= 0 {
+		return nil, ErrWorkspaceAccessDenied
+	}
+	var scope SyntheticScope
+	var hash []byte
+	err := d.QueryRowContext(ctx, `
+SELECT proposal.id,w.id,proposal.task_id,proposal.requester_id,proposal.document,proposal.document_sha256,proposal.valid_from,proposal.valid_until
+FROM security_scope_proposals proposal
+JOIN security_workspaces w ON w.id=proposal.workspace_id AND w.enabled
+JOIN security_teams team ON team.id=w.team_id AND team.tenant_id=w.tenant_id AND team.enabled
+JOIN security_tenants tenant ON tenant.id=w.tenant_id AND tenant.enabled
+JOIN security_workspace_tasks wt ON wt.workspace_id=w.id AND wt.task_id=proposal.task_id
+JOIN tasks task ON task.id=wt.task_id AND task.deleted_at IS NULL
+JOIN security_principals requester ON requester.id=proposal.requester_id AND requester.enabled AND requester.kind='human'
+JOIN security_team_memberships requester_m ON requester_m.id=proposal.requester_membership_id
+ AND requester_m.team_id=team.id AND requester_m.principal_id=requester.id AND requester_m.principal_auth_epoch=requester.auth_epoch
+ AND requester_m.role IN ('operator','manager') AND requester_m.revoked_at IS NULL
+ AND requester_m.valid_from<=statement_timestamp() AND (requester_m.expires_at IS NULL OR requester_m.expires_at>statement_timestamp())
+JOIN security_principals reader ON reader.id=$1 AND reader.auth_epoch=$2 AND reader.enabled AND reader.kind='human'
+JOIN security_team_memberships reader_m ON reader_m.team_id=team.id AND reader_m.principal_id=reader.id AND reader_m.principal_auth_epoch=reader.auth_epoch
+ AND reader_m.revoked_at IS NULL AND reader_m.valid_from<=statement_timestamp()
+ AND (reader_m.expires_at IS NULL OR reader_m.expires_at>statement_timestamp())
+WHERE w.id=$3 AND proposal.id=$4 AND proposal.environment='synthetic' AND proposal.valid_until>statement_timestamp()
+ AND ((reader.id=requester.id AND reader_m.id=requester_m.id) OR (reader_m.role='approver' AND reader.id<>requester.id))
+ AND NOT EXISTS (SELECT 1 FROM security_scope_revocations rev WHERE rev.proposal_id=proposal.id)`, readerID, authEpoch, workspaceID, proposalID).
+		Scan(&scope.ID, &scope.WorkspaceID, &scope.TaskID, &scope.RequesterID, &scope.Document, &hash, &scope.ValidFrom, &scope.ValidUntil)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrWorkspaceAccessDenied
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read synthetic scope proposal: %w", err)
+	}
+	digest := sha256.Sum256(scope.Document)
+	if len(hash) != sha256.Size || subtle.ConstantTimeCompare(hash, digest[:]) != 1 || syntheticpolicy.Validate(scope.Document) != nil {
+		return nil, ErrWorkspaceAccessDenied
+	}
+	scope.SHA256 = digest
+	scope.DecisionSHA256 = scopeDecisionDigest(scope)
+	return &scope, nil
 }
 
 // ApprovedSyntheticScope rechecks owner, approver, reader, assignment, validity,
@@ -194,5 +249,31 @@ WHERE w.id=$2 AND proposal.id=$3 AND reader.auth_epoch=$4 AND proposal.environme
 		return nil, ErrWorkspaceAccessDenied
 	}
 	s.SHA256 = digest
+	s.DecisionSHA256 = scopeDecisionDigest(s)
 	return &s, nil
+}
+
+// scopeDecisionDigest uses a fixed, domain-separated binary encoding. PostgreSQL
+// timestamps have microsecond resolution. IDs and validity times are part of the
+// decision, so an identical target document cannot be approved for a different
+// task, requester, workspace or time window using the same displayed digest.
+func scopeDecisionDigest(scope SyntheticScope) [sha256.Size]byte {
+	h := sha256.New()
+	_, _ = h.Write([]byte("ARTEX-SYNTHETIC-SCOPE-DECISION-V1\x00"))
+	var b [8]byte
+	for _, value := range []int64{scope.ID, scope.WorkspaceID, scope.TaskID, scope.RequesterID, scope.ValidFrom.UnixMicro(), scope.ValidUntil.UnixMicro()} {
+		binary.BigEndian.PutUint64(b[:], uint64(value))
+		_, _ = h.Write(b[:])
+	}
+	_, _ = h.Write(scope.SHA256[:])
+	var digest [sha256.Size]byte
+	copy(digest[:], h.Sum(nil))
+	return digest
+}
+
+// Repeated approval or revocation of the same append-only record is a generic
+// denial, rather than leaking a database error through the HTTP route.
+func isScopeConflict(err error) bool {
+	var state interface{ SQLState() string }
+	return err != nil && errors.As(err, &state) && state.SQLState() == "23505"
 }

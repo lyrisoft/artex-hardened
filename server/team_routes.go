@@ -32,23 +32,38 @@ func (r teamHumanResolver) ResolveHuman(ctx context.Context, issuer, subject str
 	return oidclogin.Human{ID: p.ID, AuthEpoch: p.AuthEpoch}, nil
 }
 
+// TeamOIDC couples the verified login resolver to the same store used by the
+// team handler. Its fields are private so a flow using another identity store
+// cannot be attached to a database whose principal IDs happen to collide.
+type TeamOIDC struct {
+	flow  *oidclogin.Flow
+	store *db.DB
+}
+
 // NewTeamOIDC constructs the separate human login component. It is not called
 // from the legacy server or main; selecting a real provider and mounting this
 // handler require the separately approved operational rollout.
-func NewTeamOIDC(ctx context.Context, cfg oidclogin.Config, pg *db.DB) (*oidclogin.Flow, error) {
+func NewTeamOIDC(ctx context.Context, cfg oidclogin.Config, pg *db.DB) (*TeamOIDC, error) {
 	if pg == nil || pg.DB == nil {
 		return nil, errors.New("team identity store unavailable")
 	}
-	return oidclogin.New(ctx, cfg, teamHumanResolver{store: pg})
+	flow, err := oidclogin.New(ctx, cfg, teamHumanResolver{store: pg})
+	if err != nil {
+		return nil, err
+	}
+	return &TeamOIDC{flow: flow, store: pg}, nil
 }
 
-// NewTeamHandler returns an isolated, read-only route tree. It does not fall
-// back to the shared-password router and is not mounted by the existing server.
-// This is not a runner, evidence service, or complete workspace application.
-func NewTeamHandler(flow *oidclogin.Flow, pg *db.DB) (http.Handler, error) {
-	if flow == nil || pg == nil || pg.DB == nil {
+// NewTeamHandler returns an isolated route tree for scoped reads and inert
+// synthetic scope decisions. It has no fallback to the shared-password router
+// and is not mounted by the existing server. Authentication and resource queries
+// necessarily share the store fixed by NewTeamOIDC. This is not a runner,
+// evidence service, or complete workspace application.
+func NewTeamHandler(team *TeamOIDC) (http.Handler, error) {
+	if team == nil || team.flow == nil || team.store == nil || team.store.DB == nil {
 		return nil, errors.New("team handler dependencies unavailable")
 	}
+	flow, pg := team.flow, team.store
 	callback, after := flow.RoutePaths()
 	if callback != "/team/auth/callback" || after != "/team" {
 		return nil, errors.New("team authentication route mismatch")
@@ -102,6 +117,7 @@ func NewTeamHandler(flow *oidclogin.Flow, pg *db.DB) (http.Handler, error) {
 		}
 		writeTeamJSON(w, map[string]any{"tasks": items, "next_cursor": next})
 	})))
+	registerTeamScopeRoutes(mux, flow, pg)
 	return mux, nil
 }
 

@@ -36,6 +36,7 @@ func TestSyntheticScopeApprovalIsAppendOnlyAndRevocable(t *testing.T) {
 	team := id(`INSERT INTO security_teams(tenant_id,kind,name,enabled) VALUES ($1,'purple','fixture',true) RETURNING id`, tenant)
 	otherTeam := id(`INSERT INTO security_teams(tenant_id,kind,name,enabled) VALUES ($1,'blue','other',true) RETURNING id`, tenant)
 	workspace := id(`INSERT INTO security_workspaces(tenant_id,team_id,name,enabled) VALUES ($1,$2,'synthetic',true) RETURNING id`, tenant, team)
+	otherWorkspace := id(`INSERT INTO security_workspaces(tenant_id,team_id,name,enabled) VALUES ($1,$2,'other',true) RETURNING id`, tenant, otherTeam)
 	mkPerson := func(kind, subject, role string, teamID int64) int64 {
 		p := id(`INSERT INTO security_principals(kind,issuer,subject,enabled) VALUES ($1,'fixture',$2,true) RETURNING id`, kind, subject)
 		exec(`INSERT INTO security_team_memberships(team_id,principal_id,role) VALUES ($1,$2,$3)`, teamID, p, role)
@@ -57,6 +58,7 @@ func TestSyntheticScopeApprovalIsAppendOnlyAndRevocable(t *testing.T) {
 	requesterEpoch, approverEpoch := int64(1), int64(1)
 	now := time.Now().UTC()
 	doc := []byte(`{"version":1,"targets":[{"address":"172.30.137.20","port":443,"methods":["tcp.connect","http.request"]}]}`)
+	docHash := sha256.Sum256(doc)
 	for _, invalid := range [][]byte{[]byte(`[]`), []byte(`{}`), []byte(`{`), []byte(`{"targets":[],"targets":["other"]}`), []byte(`{"note":"\ud800"}`), []byte(`{"version":1,"targets":[{"address":"8.8.8.8","port":443,"methods":["tcp.connect"]}]}`), []byte(`{"version":1,"targets":[{"address":"172.30.137.20","port":443,"methods":["unknown"]}]}`)} {
 		if _, err := d.ProposeSyntheticScope(ctx, requester, requesterEpoch, workspace, task.ID, invalid, now.Add(-time.Minute), now.Add(time.Hour)); !errors.Is(err, ErrWorkspaceAccessDenied) {
 			t.Fatalf("invalid proposal %q: %v", invalid, err)
@@ -75,12 +77,37 @@ func TestSyntheticScopeApprovalIsAppendOnlyAndRevocable(t *testing.T) {
 	if _, err := d.ApprovedSyntheticScope(ctx, requester, requesterEpoch, workspace, proposal); !errors.Is(err, ErrWorkspaceAccessDenied) {
 		t.Fatalf("unapproved readable: %v", err)
 	}
+	var decision [sha256.Size]byte
+	for _, reader := range []int64{requester, approver} {
+		view, err := d.ProposedSyntheticScope(ctx, reader, 1, workspace, proposal)
+		if err != nil || view == nil || !bytes.Equal(view.Document, doc) || view.SHA256 != docHash {
+			t.Fatalf("authorized proposal review failed: %+v err=%v", view, err)
+		}
+		decision = view.DecisionSHA256
+	}
+	for _, reader := range []int64{viewer, service, outsider} {
+		if _, err := d.ProposedSyntheticScope(ctx, reader, 1, workspace, proposal); !errors.Is(err, ErrWorkspaceAccessDenied) {
+			t.Fatalf("unauthorized proposal review: %v", err)
+		}
+	}
+	if _, err := d.ProposedSyntheticScope(ctx, approver, 1, otherWorkspace, proposal); !errors.Is(err, ErrWorkspaceAccessDenied) {
+		t.Fatalf("proposal disclosed through another workspace: %v", err)
+	}
+	if _, err := d.ProposedSyntheticScope(ctx, approver, 2, workspace, proposal); !errors.Is(err, ErrWorkspaceAccessDenied) {
+		t.Fatalf("stale proposal reader authorized: %v", err)
+	}
+	if err := d.ApproveSyntheticScope(ctx, approver, 1, otherWorkspace, proposal, decision); !errors.Is(err, ErrWorkspaceAccessDenied) {
+		t.Fatalf("cross-workspace approval authorized: %v", err)
+	}
+	if err := d.ApproveSyntheticScope(ctx, approver, 1, workspace, proposal, sha256.Sum256([]byte("different"))); !errors.Is(err, ErrWorkspaceAccessDenied) {
+		t.Fatalf("approval accepted a different document hash: %v", err)
+	}
 	for _, p := range []int64{requester, service, outsider} {
-		if err := d.ApproveSyntheticScope(ctx, p, 1, proposal); !errors.Is(err, ErrWorkspaceAccessDenied) {
+		if err := d.ApproveSyntheticScope(ctx, p, 1, workspace, proposal, decision); !errors.Is(err, ErrWorkspaceAccessDenied) {
 			t.Fatalf("principal %d approved: %v", p, err)
 		}
 	}
-	if err := d.ApproveSyntheticScope(ctx, approver, approverEpoch, proposal); err != nil {
+	if err := d.ApproveSyntheticScope(ctx, approver, approverEpoch, workspace, proposal, decision); err != nil {
 		t.Fatal(err)
 	}
 	scope, err := d.ApprovedSyntheticScope(ctx, requester, requesterEpoch, workspace, proposal)
@@ -107,7 +134,10 @@ func TestSyntheticScopeApprovalIsAppendOnlyAndRevocable(t *testing.T) {
 	} {
 		invalidHash := sha256.Sum256(invalid)
 		invalidID := id(`INSERT INTO security_scope_proposals(workspace_id,task_id,requester_id,document,document_sha256,valid_from,valid_until,requester_membership_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, workspace, task.ID, requester, invalid, invalidHash[:], now.Add(-time.Minute), now.Add(time.Hour), requesterMembership)
-		if err := d.ApproveSyntheticScope(ctx, approver, approverEpoch, invalidID); !errors.Is(err, ErrWorkspaceAccessDenied) {
+		if _, err := d.ProposedSyntheticScope(ctx, approver, approverEpoch, workspace, invalidID); !errors.Is(err, ErrWorkspaceAccessDenied) {
+			t.Fatalf("invalid persisted scope was shown for review: %v", err)
+		}
+		if err := d.ApproveSyntheticScope(ctx, approver, approverEpoch, workspace, invalidID, invalidHash); !errors.Is(err, ErrWorkspaceAccessDenied) {
 			t.Fatalf("invalid persisted scope approved: %v", err)
 		}
 		var decisions int
@@ -151,10 +181,18 @@ func TestSyntheticScopeApprovalIsAppendOnlyAndRevocable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := d.ApproveSyntheticScope(ctx, approver, 1, newProposal); !errors.Is(err, ErrWorkspaceAccessDenied) {
+	newView, err := d.ProposedSyntheticScope(ctx, approver, approverEpoch, workspace, newProposal)
+	if err != nil || newView.DecisionSHA256 == decision {
+		t.Fatalf("new proposal did not get a distinct decision digest: %+v err=%v", newView, err)
+	}
+	newDecision := newView.DecisionSHA256
+	if err := d.ApproveSyntheticScope(ctx, approver, approverEpoch, workspace, newProposal, decision); !errors.Is(err, ErrWorkspaceAccessDenied) {
+		t.Fatalf("decision for another proposal was accepted: %v", err)
+	}
+	if err := d.ApproveSyntheticScope(ctx, approver, 1, workspace, newProposal, newDecision); !errors.Is(err, ErrWorkspaceAccessDenied) {
 		t.Fatalf("stale approver session authorized a new grant: %v", err)
 	}
-	if err := d.ApproveSyntheticScope(ctx, approver, approverEpoch, newProposal); err != nil {
+	if err := d.ApproveSyntheticScope(ctx, approver, approverEpoch, workspace, newProposal, newDecision); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := d.ApprovedSyntheticScope(ctx, requester, 2, workspace, newProposal); !errors.Is(err, ErrWorkspaceAccessDenied) {
@@ -167,21 +205,29 @@ func TestSyntheticScopeApprovalIsAppendOnlyAndRevocable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	pendingView, err := d.ProposedSyntheticScope(ctx, approver, approverEpoch, workspace, pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingDecision := pendingView.DecisionSHA256
 	exec(`UPDATE security_team_memberships SET revoked_at=now() WHERE id=$1`, requesterMembership)
 	exec(`INSERT INTO security_team_memberships(team_id,principal_id,role) VALUES ($1,$2,'operator')`, team, requester)
 	if _, err := d.ApprovedSyntheticScope(ctx, requester, requesterEpoch, workspace, newProposal); !errors.Is(err, ErrWorkspaceAccessDenied) {
 		t.Fatalf("regranted requester revived old scope: %v", err)
 	}
-	if err := d.ApproveSyntheticScope(ctx, approver, approverEpoch, pending); !errors.Is(err, ErrWorkspaceAccessDenied) {
+	if err := d.ApproveSyntheticScope(ctx, approver, approverEpoch, workspace, pending, pendingDecision); !errors.Is(err, ErrWorkspaceAccessDenied) {
 		t.Fatalf("approved a proposal made under a revoked requester grant: %v", err)
 	}
-	if err := d.RevokeSyntheticScope(ctx, service, 1, proposal, "synthetic test"); !errors.Is(err, ErrWorkspaceAccessDenied) {
+	if err := d.RevokeSyntheticScope(ctx, service, 1, workspace, proposal, "synthetic test"); !errors.Is(err, ErrWorkspaceAccessDenied) {
 		t.Fatalf("service revoked: %v", err)
 	}
-	if err := d.RevokeSyntheticScope(ctx, approver, 1, proposal, "synthetic test"); !errors.Is(err, ErrWorkspaceAccessDenied) {
+	if err := d.RevokeSyntheticScope(ctx, approver, 1, workspace, proposal, "synthetic test"); !errors.Is(err, ErrWorkspaceAccessDenied) {
 		t.Fatalf("stale approver session revoked scope: %v", err)
 	}
-	if err := d.RevokeSyntheticScope(ctx, approver, approverEpoch, proposal, "synthetic test"); err != nil {
+	if err := d.RevokeSyntheticScope(ctx, approver, approverEpoch, otherWorkspace, proposal, "synthetic test"); !errors.Is(err, ErrWorkspaceAccessDenied) {
+		t.Fatalf("cross-workspace revocation authorized: %v", err)
+	}
+	if err := d.RevokeSyntheticScope(ctx, approver, approverEpoch, workspace, proposal, "synthetic test"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := d.ApprovedSyntheticScope(ctx, requester, requesterEpoch, workspace, proposal); !errors.Is(err, ErrWorkspaceAccessDenied) {
@@ -189,5 +235,31 @@ func TestSyntheticScopeApprovalIsAppendOnlyAndRevocable(t *testing.T) {
 	}
 	if _, err := d.Exec(`DELETE FROM security_scope_revocations WHERE proposal_id=$1`, proposal); err == nil {
 		t.Fatal("revocation was removed")
+	}
+}
+
+func TestScopeDecisionDigestBindsApprovalContext(t *testing.T) {
+	base := SyntheticScope{ID: 1, WorkspaceID: 2, TaskID: 3, RequesterID: 4, SHA256: sha256.Sum256([]byte("fixture")), ValidFrom: time.Unix(100, 0).UTC(), ValidUntil: time.Unix(200, 0).UTC()}
+	want := scopeDecisionDigest(base)
+	for _, mutate := range []func(*SyntheticScope){
+		func(s *SyntheticScope) { s.ID++ },
+		func(s *SyntheticScope) { s.WorkspaceID++ },
+		func(s *SyntheticScope) { s.TaskID++ },
+		func(s *SyntheticScope) { s.RequesterID++ },
+		func(s *SyntheticScope) { s.ValidFrom = s.ValidFrom.Add(time.Microsecond) },
+		func(s *SyntheticScope) { s.ValidUntil = s.ValidUntil.Add(time.Microsecond) },
+		func(s *SyntheticScope) { s.SHA256[0] ^= 1 },
+	} {
+		changed := base
+		mutate(&changed)
+		if scopeDecisionDigest(changed) == want {
+			t.Fatal("decision digest did not bind every approval field")
+		}
+	}
+	sameInstants := base
+	sameInstants.ValidFrom = base.ValidFrom.In(time.FixedZone("fixture", 3600))
+	sameInstants.ValidUntil = base.ValidUntil.In(time.FixedZone("fixture", 3600))
+	if scopeDecisionDigest(sameInstants) != want {
+		t.Fatal("equivalent instants produced different approval digests")
 	}
 }
