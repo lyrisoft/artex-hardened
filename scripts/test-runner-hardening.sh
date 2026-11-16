@@ -13,7 +13,14 @@ suffix="$(python3 -c 'import secrets; print(secrets.token_hex(8))')"
 network="artex-runner-test-${suffix}"
 server="${network}-target"
 runner="${network}-runner"
+stage="fixture image"
 cleanup() {
+  result=$?
+  if [[ "$result" -ne 0 ]]; then
+    echo "FAIL: disposable Docker fixture failed at $stage (exit $result)" >&2
+    docker logs "$server" >&2 2>/dev/null || true
+    docker logs "$runner" >&2 2>/dev/null || true
+  fi
   docker rm -f "$runner" "$server" >/dev/null 2>&1 || true
   docker network rm "$network" >/dev/null 2>&1 || true
 }
@@ -23,12 +30,20 @@ trap cleanup EXIT
 # This tag is used only on the disposable CI host and is not a production image.
 docker pull alpine:3.22 >/dev/null
 image_id="$(docker image inspect --format '{{.Id}}' alpine:3.22)"
-[[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+if [[ ! "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo "FAIL: fixture image has an unexpected content ID" >&2
+  exit 1
+fi
+stage="fixture network and target"
 docker network create --internal "$network" >/dev/null
 docker run -d --name "$server" --network "$network" "$image_id" /bin/sh -c \
   'mkdir -p /www; echo synthetic-fixture > /www/index.html; exec httpd -f -p 8080 -h /www' >/dev/null
 target_ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$server")"
-[[ "$target_ip" =~ ^[0-9.]+$ ]]
+if [[ ! "$target_ip" =~ ^[0-9.]+$ ]]; then
+  echo "FAIL: synthetic target has no IPv4 address" >&2
+  exit 1
+fi
+stage="synthetic target positive control"
 # This positive control proves the target and network work independently of the
 # isolated container's negative connection test.
 for n in 1 2 3 4 5 6 7 8 9 10; do
@@ -39,6 +54,7 @@ for n in 1 2 3 4 5 6 7 8 9 10; do
   sleep 1
 done
 
+stage="read-only filesystem controls"
 # Prove the read-only mount is doing work: in an otherwise similar throwaway
 # control, root owns / and can write there when the root filesystem is writable,
 # but the same operation must fail with --read-only. These are isolated test
@@ -51,6 +67,7 @@ if docker run --rm --network none --user 0:0 --cap-drop ALL --security-opt no-ne
   exit 1
 fi
 
+stage="hardened container creation"
 # A host variable is a dummy canary: it must not be inherited by the container.
 export ARTEX_RUNNER_TEST_SECRET='fixture-only-do-not-forward'
 docker create --name "$runner" --network none --user 65532:65532 --read-only \
@@ -74,6 +91,7 @@ docker create --name "$runner" --network none --user 65532:65532 --read-only \
     echo "PASS: disposable no-network container passed hardening checks"
   ' fixture "$target_ip" >/dev/null
 
+stage="Docker configuration inspection"
 docker inspect "$runner" | python3 -c '
 import json, sys
 container = json.load(sys.stdin)[0]
@@ -85,4 +103,5 @@ assert "ALL" in host["CapDrop"] and "no-new-privileges:true" in host["SecurityOp
 assert host["PidsLimit"] == 32 and host["Memory"] == 128 * 1024 * 1024
 assert host["NanoCpus"] == 500000000 and set(host["Tmpfs"]) == {"/tmp"}
 '
+stage="hardened container runtime"
 docker start -a "$runner"
