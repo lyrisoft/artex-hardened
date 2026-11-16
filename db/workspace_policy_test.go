@@ -80,7 +80,7 @@ func TestWorkspaceActionPolicy(t *testing.T) {
 	}
 	for i, tc := range cases {
 		t.Run(fmt.Sprintf("%d_%s_%s", i, tc.name, tc.action), func(t *testing.T) {
-			err := d.AuthorizeWorkspaceAction(context.Background(), identities[tc.name], workspace, tc.action, tc.r)
+			err := d.AuthorizeWorkspaceAction(context.Background(), identities[tc.name], 1, workspace, tc.action, tc.r)
 			if (err == nil) != tc.allowed {
 				t.Fatalf("allowed=%v err=%v", tc.allowed, err)
 			}
@@ -89,11 +89,14 @@ func TestWorkspaceActionPolicy(t *testing.T) {
 			}
 		})
 	}
+	if err := d.AuthorizeWorkspaceAction(context.Background(), identities["manager"], 2, workspace, ActionAgentRead, WorkspaceResource{AgentID: agentID}); !errors.Is(err, ErrWorkspaceAccessDenied) {
+		t.Fatalf("wrong authentication generation authorized: %v", err)
+	}
 	exec(`UPDATE security_team_memberships SET revoked_at=now() WHERE team_id=$1 AND principal_id=$2`, red, identities["manager"])
-	if err := d.AuthorizeWorkspaceAction(context.Background(), identities["manager"], workspace, ActionAgentRead, WorkspaceResource{AgentID: agentID}); !errors.Is(err, ErrWorkspaceAccessDenied) {
+	if err := d.AuthorizeWorkspaceAction(context.Background(), identities["manager"], 1, workspace, ActionAgentRead, WorkspaceResource{AgentID: agentID}); !errors.Is(err, ErrWorkspaceAccessDenied) {
 		t.Fatalf("revoked principal: %v", err)
 	}
-	if err := (*DB)(nil).AuthorizeWorkspaceAction(context.Background(), 1, 1, ActionTaskRead, WorkspaceResource{TaskID: 1}); !errors.Is(err, ErrWorkspaceAccessDenied) {
+	if err := (*DB)(nil).AuthorizeWorkspaceAction(context.Background(), 1, 1, 1, ActionTaskRead, WorkspaceResource{TaskID: 1}); !errors.Is(err, ErrWorkspaceAccessDenied) {
 		t.Fatalf("nil store: %v", err)
 	}
 }

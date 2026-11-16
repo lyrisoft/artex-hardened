@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/Autumn-27/artex/security/syntheticpolicy"
 )
 
 // SyntheticScope is an inert record, not permission to contact a target. Its
@@ -22,17 +24,19 @@ type SyntheticScope struct {
 }
 
 // ProposeSyntheticScope stores exact JSON bytes and their hash. The caller must
-// derive requesterID from a verified human session, never from request content.
+// derive requesterID and authEpoch from a verified human session, never from
+// request content.
 // "synthetic" is only a classification asserted by the author; this storage
 // method does not prove that an address, account or data source is synthetic.
-func (d *DB) ProposeSyntheticScope(ctx context.Context, requesterID, workspaceID, taskID int64, document []byte, from, until time.Time) (int64, error) {
-	if d == nil || d.DB == nil || requesterID <= 0 || workspaceID <= 0 || taskID <= 0 || len(document) < 2 || len(document) > 65536 || !until.After(from) {
+func (d *DB) ProposeSyntheticScope(ctx context.Context, requesterID, authEpoch, workspaceID, taskID int64, document []byte, from, until time.Time) (int64, error) {
+	if ctx == nil || d == nil || d.DB == nil || requesterID <= 0 || authEpoch <= 0 || workspaceID <= 0 || taskID <= 0 || len(document) < 2 || len(document) > 65536 || !until.After(from) {
 		return 0, ErrWorkspaceAccessDenied
 	}
 	// Validate, hash and persist the same snapshot rather than retaining a slice
-	// owned by the caller. This does not validate target or method semantics.
+	// owned by the caller. Syntax and bounded endpoint/method semantics do not
+	// prove that any endpoint is synthetic or approved by independent inventory.
 	document = bytes.Clone(document)
-	if !validSyntheticScopeDocument(document) {
+	if syntheticpolicy.Validate(document) != nil {
 		return 0, ErrWorkspaceAccessDenied
 	}
 	digest := sha256.Sum256(document)
@@ -48,8 +52,8 @@ JOIN security_team_memberships m ON m.team_id=team.id AND m.role IN ('operator',
 JOIN security_principals p ON p.id=m.principal_id AND m.principal_auth_epoch=p.auth_epoch AND p.kind='human' AND p.enabled
 JOIN security_workspace_tasks wt ON wt.workspace_id=w.id
 JOIN tasks t ON t.id=wt.task_id AND t.deleted_at IS NULL
-WHERE w.enabled AND w.id=$2 AND p.id=$1 AND t.id=$3 AND $7 > statement_timestamp()
-RETURNING id`, requesterID, workspaceID, taskID, document, digest[:], from, until).Scan(&id)
+WHERE w.enabled AND w.id=$2 AND p.id=$1 AND p.auth_epoch=$8 AND t.id=$3 AND $7 > statement_timestamp()
+RETURNING id`, requesterID, workspaceID, taskID, document, digest[:], from, until, authEpoch).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, ErrWorkspaceAccessDenied
 	}
@@ -60,10 +64,10 @@ RETURNING id`, requesterID, workspaceID, taskID, document, digest[:], from, unti
 }
 
 // ApproveSyntheticScope records the decision of a distinct, currently authorized
-// human approver. approverID must come from that person's verified session. It
-// cannot safely be called using an agent-supplied ID or the legacy shared login.
-func (d *DB) ApproveSyntheticScope(ctx context.Context, approverID, proposalID int64) error {
-	if d == nil || d.DB == nil || approverID <= 0 || proposalID <= 0 {
+// human approver. approverID and authEpoch must come from that person's verified
+// session. It cannot safely be called using an agent-supplied ID or the legacy shared login.
+func (d *DB) ApproveSyntheticScope(ctx context.Context, approverID, authEpoch, proposalID int64) error {
+	if ctx == nil || d == nil || d.DB == nil || approverID <= 0 || authEpoch <= 0 || proposalID <= 0 {
 		return ErrWorkspaceAccessDenied
 	}
 	tx, err := d.BeginTx(ctx, nil)
@@ -89,9 +93,9 @@ JOIN security_team_memberships requester_m ON requester_m.id=proposal.requester_
  AND requester_m.valid_from <= statement_timestamp() AND (requester_m.expires_at IS NULL OR requester_m.expires_at > statement_timestamp())
 JOIN security_workspace_tasks wt ON wt.workspace_id=w.id AND wt.task_id=proposal.task_id
 JOIN tasks t ON t.id=wt.task_id AND t.deleted_at IS NULL
-WHERE proposal.id=$2 AND p.id=$1 AND proposal.requester_id<>p.id AND proposal.valid_until > statement_timestamp()
+WHERE proposal.id=$2 AND p.id=$1 AND p.auth_epoch=$3 AND proposal.requester_id<>p.id AND proposal.valid_until > statement_timestamp()
  AND NOT EXISTS(SELECT 1 FROM security_scope_revocations r WHERE r.proposal_id=proposal.id)
-RETURNING proposal_id`, approverID, proposalID).Scan(&id)
+RETURNING proposal_id`, approverID, proposalID, authEpoch).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrWorkspaceAccessDenied
 	}
@@ -106,7 +110,7 @@ RETURNING proposal_id`, approverID, proposalID).Scan(&id)
 		return fmt.Errorf("approve synthetic scope: load document: %w", err)
 	}
 	digest := sha256.Sum256(document)
-	if len(hash) != sha256.Size || subtle.ConstantTimeCompare(hash, digest[:]) != 1 || !validSyntheticScopeDocument(document) {
+	if len(hash) != sha256.Size || subtle.ConstantTimeCompare(hash, digest[:]) != 1 || syntheticpolicy.Validate(document) != nil {
 		return ErrWorkspaceAccessDenied
 	}
 	if err := tx.Commit(); err != nil {
@@ -116,9 +120,10 @@ RETURNING proposal_id`, approverID, proposalID).Scan(&id)
 }
 
 // RevokeSyntheticScope appends a revocation. A currently authorized human
-// approver must initiate it. Active executor interruption is not implemented.
-func (d *DB) RevokeSyntheticScope(ctx context.Context, revokerID, proposalID int64, reason string) error {
-	if d == nil || d.DB == nil || revokerID <= 0 || proposalID <= 0 || len(reason) == 0 || len(reason) > 4096 {
+// approver must initiate it with the verified session generation. Active executor
+// interruption is not implemented.
+func (d *DB) RevokeSyntheticScope(ctx context.Context, revokerID, authEpoch, proposalID int64, reason string) error {
+	if ctx == nil || d == nil || d.DB == nil || revokerID <= 0 || authEpoch <= 0 || proposalID <= 0 || len(reason) == 0 || len(reason) > 4096 {
 		return ErrWorkspaceAccessDenied
 	}
 	var id int64
@@ -131,7 +136,7 @@ JOIN security_tenants tenant ON tenant.id=w.tenant_id AND tenant.enabled
 JOIN security_team_memberships m ON m.team_id=team.id AND m.role='approver' AND m.revoked_at IS NULL
  AND m.valid_from <= statement_timestamp() AND (m.expires_at IS NULL OR m.expires_at > statement_timestamp())
 JOIN security_principals p ON p.id=m.principal_id AND m.principal_auth_epoch=p.auth_epoch AND p.kind='human' AND p.enabled
-WHERE proposal.id=$2 AND p.id=$1 RETURNING proposal_id`, revokerID, proposalID, reason).Scan(&id)
+WHERE proposal.id=$2 AND p.id=$1 AND p.auth_epoch=$4 RETURNING proposal_id`, revokerID, proposalID, reason, authEpoch).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrWorkspaceAccessDenied
 	}
@@ -142,10 +147,10 @@ WHERE proposal.id=$2 AND p.id=$1 RETURNING proposal_id`, revokerID, proposalID, 
 }
 
 // ApprovedSyntheticScope rechecks owner, approver, reader, assignment, validity,
-// revocation and document hash. A successful lookup is deliberately NOT an
+// revocation, session generation and document hash. A successful lookup is NOT an
 // execution authorization or an egress check.
-func (d *DB) ApprovedSyntheticScope(ctx context.Context, readerID, workspaceID, proposalID int64) (*SyntheticScope, error) {
-	if d == nil || d.DB == nil || readerID <= 0 || workspaceID <= 0 || proposalID <= 0 {
+func (d *DB) ApprovedSyntheticScope(ctx context.Context, readerID, authEpoch, workspaceID, proposalID int64) (*SyntheticScope, error) {
+	if ctx == nil || d == nil || d.DB == nil || readerID <= 0 || authEpoch <= 0 || workspaceID <= 0 || proposalID <= 0 {
 		return nil, ErrWorkspaceAccessDenied
 	}
 	var s SyntheticScope
@@ -174,9 +179,9 @@ JOIN security_principals reader ON reader.id=$1 AND reader.enabled AND reader.ki
 JOIN security_team_memberships reader_m ON reader_m.team_id=team.id AND reader_m.principal_id=reader.id AND reader_m.principal_auth_epoch=reader.auth_epoch
  AND reader_m.role IN ('viewer','operator','manager','approver') AND reader_m.revoked_at IS NULL
  AND reader_m.valid_from<=statement_timestamp() AND (reader_m.expires_at IS NULL OR reader_m.expires_at>statement_timestamp())
-WHERE w.id=$2 AND proposal.id=$3 AND proposal.environment='synthetic'
+WHERE w.id=$2 AND proposal.id=$3 AND reader.auth_epoch=$4 AND proposal.environment='synthetic'
  AND proposal.valid_from<=statement_timestamp() AND proposal.valid_until>statement_timestamp()
- AND NOT EXISTS (SELECT 1 FROM security_scope_revocations rev WHERE rev.proposal_id=proposal.id)`, readerID, workspaceID, proposalID).
+ AND NOT EXISTS (SELECT 1 FROM security_scope_revocations rev WHERE rev.proposal_id=proposal.id)`, readerID, workspaceID, proposalID, authEpoch).
 		Scan(&s.ID, &s.WorkspaceID, &s.TaskID, &s.RequesterID, &s.ApproverID, &s.Document, &hash, &s.ValidFrom, &s.ValidUntil)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrWorkspaceAccessDenied
@@ -185,7 +190,7 @@ WHERE w.id=$2 AND proposal.id=$3 AND proposal.environment='synthetic'
 		return nil, fmt.Errorf("read approved synthetic scope: %w", err)
 	}
 	digest := sha256.Sum256(s.Document)
-	if len(hash) != sha256.Size || subtle.ConstantTimeCompare(hash, digest[:]) != 1 || !validSyntheticScopeDocument(s.Document) {
+	if len(hash) != sha256.Size || subtle.ConstantTimeCompare(hash, digest[:]) != 1 || syntheticpolicy.Validate(s.Document) != nil {
 		return nil, ErrWorkspaceAccessDenied
 	}
 	s.SHA256 = digest

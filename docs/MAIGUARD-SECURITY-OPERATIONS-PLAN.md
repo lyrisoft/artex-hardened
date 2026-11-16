@@ -79,8 +79,8 @@ The program must close all of these paths before it claims isolation or enables 
   provider configuration, independent deployment and security review remain. The
   verifier also rejects ambiguous or case-variant reserved JWT keys before
   signature verification. No real provider has been configured or contacted.
-- `AuthorizeWorkspaceAction` checks current membership and a directly assigned
-  agent or task for a narrow set of CRUD actions. Scheduling/execution, evidence,
+- `AuthorizeWorkspaceAction` checks the verified identity generation, current
+  membership and a directly assigned agent or task for a narrow set of CRUD actions. Scheduling/execution, evidence,
   secrets, tool/MCP calls, approval decisions and protected detection changes deny
   by default. It is not connected to the legacy API or runtime and is not sufficient
   on its own: an eventual protected operation must authenticate its caller and
@@ -108,12 +108,18 @@ The program must close all of these paths before it claims isolation or enables 
   a revocation. The read path rechecks memberships, task assignment, time and hash.
   Proposal, approval and read paths reject duplicate JSON keys, invalid UTF-8,
   unpaired surrogate escapes and excessive nesting, without rewriting the approved
-  bytes. Previously stored ambiguous documents cannot be newly approved or read;
-  this changes no existing records and does not validate target or method semantics.
-  A label does not establish that data or targets are synthetic. JSON semantics,
-  approved methods, signatures, independent storage/administration and egress
-  enforcement are not implemented. DB owners can bypass the append-only triggers;
-  no proposal or approval authorizes a network action.
+  bytes. Proposal, approval and read also require a versioned manifest with exact
+  private IPv4 addresses, TCP ports and named methods; DNS, ranges, public IPs,
+  IPv6, wildcards and unknown fields are denied. Existing documents outside this
+  schema are preserved but cannot be newly approved or returned by that lookup.
+  An inactive policy compiler checks the approval digest and every approved
+  endpoint/method against a separately supplied inventory and rejects an expansion. A private address or a
+  label does not establish a target is synthetic. The caller must bind inventory
+  to the same tenant and workspace from an independently administered source and
+  recheck approval, expiration and revocation at each operation. Signatures,
+  independent storage/administration and egress enforcement are not implemented.
+  DB owners can bypass the append-only triggers; no proposal, approval or compiled
+  in-process policy authorizes a network action.
 - Scope proposals, approvals and scoped trigger bindings now refer to the exact
   membership grant that created them. A revoked grant cannot be restored or edited;
   a new grant does not revive old approvals or bindings. Migration 0008 prevents
@@ -122,6 +128,9 @@ The program must close all of these paths before it claims isolation or enables 
   grants require an enabled principal and serialize with a concurrent disable.
   Older grants without a recorded generation remain unbound. Re-enabling a disabled
   tenant, team or workspace can still restore access if its grant was not revoked.
+  The inactive membership, action, scope-decision and trigger-query helpers now
+  require the authenticated principal generation and check it in their SQL;
+  callers must derive it from verified authentication, never request or event data.
   A DB owner can bypass these triggers; active-run revocation and independent
   administration remain incomplete.
   Migration 0007 preserves older unbound records but does not infer their grants;
@@ -281,7 +290,22 @@ bindings or scopes during migration.
 On a disposable copy, verify the pre-migration backup, record its checksum and the
 applied migration checksums, upgrade, check legacy evidence/graphs, and run the
 negative membership and authorization suite before enabling any future feature.
-No migration makes old shared-password sessions trustworthy.
+No migration makes old shared-password sessions trustworthy. Previously stored
+scope bytes are not rewritten; version-1 validation denies incompatible earlier
+scope documents. An authorized operator must submit and obtain independent approval
+for a new document after reviewing target ownership and fixture inventory.
+
+A version-1 fixture document has the following shape. Each method is separately
+allowed per endpoint; this is not permission to run it:
+
+```json
+{"version":1,"targets":[{"address":"172.30.137.20","port":443,"methods":["tcp.connect","http.request"]}]}
+```
+
+The parser currently recognizes `tcp.connect`, `http.request`, and
+`browser.navigate`; a scanner, DNS, UDP, IPv6, raw-packet or other capability
+needs an explicit design and independent enforcement before it can be admitted.
+Existing legacy execution has not been changed by this inactive schema.
 
 For a rollback rehearsal, stop admission and drain/terminate isolated leases, export
 and preserve all new membership/evidence/audit records, and verify backup integrity.
@@ -407,6 +431,15 @@ is reviewed. A prior main-branch CI pass does not prove a new branch or runtime.
   -timeout 180s ./agent ./server` passed on another fresh fixture, as did
   `go vet -p 2 ./agent ./server` and a Go build. Those earlier checks did not
   validate malformed skill metadata or establish team isolation.
+- After the exact-target and generation-check changes, `go build -p 2 ./...`,
+  `go vet -p 2 ./...`, `go test -p 1 -count=1 -timeout 240s ./...`, and
+  `go test -race -p 1 -count=1 -timeout 240s ./db ./server
+  ./security/syntheticpolicy` passed on fresh synthetic PostgreSQL fixtures.
+  A 30-second inventory-intersection fuzz run passed with 734,512 executions.
+  The new disposable Docker hardening fixture passed `bash -n` and denied an
+  invocation without the disposable-host acknowledgement; its real Docker run
+  is recorded in CI. It is not a team runner, and does not test team egress,
+  browser/scanner parity, active-run interruption, or independent custody.
 - After the isolated OIDC and read-only team handler changes, `go build -p 2
   ./...`, `go vet -p 2 ./...`, `go test -p 1 -count=1 -timeout 240s ./...`,
   and the CI package list with `go test -race -p 1 -count=1 -timeout 420s`

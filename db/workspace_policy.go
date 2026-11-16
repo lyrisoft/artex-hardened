@@ -42,13 +42,13 @@ type WorkspaceResource struct {
 
 // AuthorizeWorkspaceAction resolves the actor's current membership and the
 // specific agent/task assignment together, using data from the database rather
-// than supplied roles or team labels. principalID must come from an independently
-// verified identity. A successful result is preliminary only: this function must
-// not be used to expose child evidence, issue credentials, dispatch a tool, make
+// than supplied roles or team labels. principalID and authEpoch must come from
+// an independently verified identity. A successful result is preliminary only:
+// this function must not be used to expose child evidence, issue credentials, dispatch a tool, make
 // an approval decision, or start work. Those operations deny until their resource
 // ownership, authorization, target policy and isolated execution gates exist.
-func (d *DB) AuthorizeWorkspaceAction(ctx context.Context, principalID, workspaceID int64, action WorkspaceAction, resource WorkspaceResource) error {
-	if d == nil || d.DB == nil || principalID <= 0 || workspaceID <= 0 || resource.AgentID < 0 || resource.TaskID < 0 {
+func (d *DB) AuthorizeWorkspaceAction(ctx context.Context, principalID, authEpoch, workspaceID int64, action WorkspaceAction, resource WorkspaceResource) error {
+	if ctx == nil || d == nil || d.DB == nil || principalID <= 0 || authEpoch <= 0 || workspaceID <= 0 || resource.AgentID < 0 || resource.TaskID < 0 {
 		return ErrWorkspaceAccessDenied
 	}
 	needAgent, needTask := false, false
@@ -78,9 +78,9 @@ JOIN security_teams team ON team.id=w.team_id AND team.tenant_id=w.tenant_id
 JOIN security_tenants tenant ON tenant.id=w.tenant_id
 JOIN security_team_memberships m ON m.team_id=team.id
 JOIN security_principals p ON p.id=m.principal_id AND m.principal_auth_epoch=p.auth_epoch
-WHERE w.id=$1 AND p.id=$2 AND w.enabled AND team.enabled AND tenant.enabled AND p.enabled
+WHERE w.id=$1 AND p.id=$2 AND p.auth_epoch=$5 AND w.enabled AND team.enabled AND tenant.enabled AND p.enabled
  AND m.revoked_at IS NULL AND m.valid_from <= statement_timestamp()
- AND (m.expires_at IS NULL OR m.expires_at > statement_timestamp())`, workspaceID, principalID, resource.AgentID, resource.TaskID).
+ AND (m.expires_at IS NULL OR m.expires_at > statement_timestamp())`, workspaceID, principalID, resource.AgentID, resource.TaskID, authEpoch).
 		Scan(&kind, &role, &agentOK, &taskOK)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrWorkspaceAccessDenied

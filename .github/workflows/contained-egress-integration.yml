@@ -13,3 +13,5 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify actual network namespace containment
         run: bash scripts/test-egress-integration.sh
+      - name: Verify disposable no-network container hardening
+        run: bash scripts/test-runner-hardening.sh

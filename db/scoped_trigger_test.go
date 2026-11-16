@@ -63,9 +63,10 @@ func TestScopedTriggerFiltersBeforeDisclosureAndRechecks(t *testing.T) {
 	}
 	exec(`INSERT INTO security_scoped_trigger_bindings(trigger_id,workspace_id,principal_id,owner_membership_id) VALUES ($1,$2,$3,$4)`, tr.ID, rw, principal, member)
 	ctx := context.Background()
+	epoch := int64(1)
 	list := func(p, w int64) []ScopedToolEvent {
 		t.Helper()
-		got, err := d.ScopedToolEvents(ctx, p, w, tr.ID, 0, 100)
+		got, err := d.ScopedToolEvents(ctx, p, epoch, w, tr.ID, 0, 100)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -114,11 +115,12 @@ func TestScopedTriggerFiltersBeforeDisclosureAndRechecks(t *testing.T) {
 	if !foundLegacy {
 		t.Fatal("unassigned legacy tool event was lost")
 	}
-	if _, err := d.ScopedToolEventForDispatch(ctx, principal, rw, tr.ID, redEvent); err != nil {
+	if _, err := d.ScopedToolEventForDispatch(ctx, principal, epoch, rw, tr.ID, redEvent); err != nil {
 		t.Fatalf("dispatch recheck: %v", err)
 	}
 	exec(`UPDATE security_principals SET enabled=false WHERE id=$1`, principal)
 	exec(`UPDATE security_principals SET enabled=true WHERE id=$1`, principal)
+	epoch = 2
 	if len(list(principal, rw)) != 0 {
 		t.Fatal("identity disable/re-enable revived a trigger grant")
 	}
@@ -128,18 +130,24 @@ func TestScopedTriggerFiltersBeforeDisclosureAndRechecks(t *testing.T) {
 	if len(list(principal, rw)) != 1 {
 		t.Fatal("explicitly rebound trigger did not use the new grant")
 	}
+	if old, err := d.ScopedToolEvents(ctx, principal, 1, rw, tr.ID, 0, 100); err != nil || len(old) != 0 {
+		t.Fatalf("stale service identity gained a rebound trigger: %+v err=%v", old, err)
+	}
+	if _, err := d.ScopedToolEventForDispatch(ctx, principal, 1, rw, tr.ID, redEvent); !errors.Is(err, ErrWorkspaceAccessDenied) {
+		t.Fatalf("stale service identity dispatched event: %v", err)
+	}
 	exec(`UPDATE security_team_memberships SET revoked_at=now() WHERE id=$1`, member)
 	if len(list(principal, rw)) != 0 {
 		t.Fatal("revoked owner can still list")
 	}
-	if _, err := d.ScopedToolEventForDispatch(ctx, principal, rw, tr.ID, redEvent); !errors.Is(err, ErrWorkspaceAccessDenied) {
+	if _, err := d.ScopedToolEventForDispatch(ctx, principal, epoch, rw, tr.ID, redEvent); !errors.Is(err, ErrWorkspaceAccessDenied) {
 		t.Fatalf("revoked dispatch err=%v", err)
 	}
 	exec(`INSERT INTO security_team_memberships(team_id,principal_id,role) VALUES ($1,$2,'operator')`, red, principal)
 	if len(list(principal, rw)) != 0 {
 		t.Fatal("new membership revived an old trigger binding")
 	}
-	if _, err := d.ScopedToolEventForDispatch(ctx, principal, rw, tr.ID, redEvent); !errors.Is(err, ErrWorkspaceAccessDenied) {
+	if _, err := d.ScopedToolEventForDispatch(ctx, principal, epoch, rw, tr.ID, redEvent); !errors.Is(err, ErrWorkspaceAccessDenied) {
 		t.Fatalf("regranted principal dispatched an old trigger: %v", err)
 	}
 	allowed, err := d.LegacyTriggerPermitted(ctx, "scoped_red_fixture", nil, nil)

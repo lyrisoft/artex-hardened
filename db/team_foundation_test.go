@@ -35,9 +35,10 @@ func TestResolveWorkspaceMembership(t *testing.T) {
 		t.Fatal(err)
 	}
 	membership := id(`INSERT INTO security_team_memberships(team_id,principal_id,role) VALUES ($1,$2,'operator') RETURNING id`, team, principal)
+	epoch := int64(1)
 	deny := func(principalID, workspaceID int64) {
 		t.Helper()
-		got, err := d.ResolveWorkspaceMembership(context.Background(), principalID, workspaceID)
+		got, err := d.ResolveWorkspaceMembership(context.Background(), principalID, epoch, workspaceID)
 		if got != nil || !errors.Is(err, ErrWorkspaceAccessDenied) {
 			t.Fatalf("principal=%d workspace=%d: got=%+v err=%v; want generic denial", principalID, workspaceID, got, err)
 		}
@@ -70,7 +71,7 @@ func TestResolveWorkspaceMembership(t *testing.T) {
 	if _, err := d.Exec(`UPDATE security_workspaces SET enabled=true WHERE id=$1`, otherWorkspace); err != nil {
 		t.Fatal(err)
 	}
-	got, err := d.ResolveWorkspaceMembership(context.Background(), principal, workspace)
+	got, err := d.ResolveWorkspaceMembership(context.Background(), principal, epoch, workspace)
 	if err != nil || got == nil || got.PrincipalID != principal || got.PrincipalKind != "human" || got.Role != "operator" || got.TenantID != tenant || got.TeamID != team || got.TeamKind != "red" || got.WorkspaceID != workspace {
 		t.Fatalf("resolved membership = %+v, err=%v", got, err)
 	}
@@ -97,12 +98,16 @@ func TestResolveWorkspaceMembership(t *testing.T) {
 			t.Fatalf("enable %s: %v", tc.name, err)
 		}
 		if tc.name == "principal" {
+			epoch = 2
 			// Re-enabling the identity must not revive a pre-disable grant.
 			deny(principal, workspace)
 			if _, err := d.Exec(`UPDATE security_team_memberships SET revoked_at=now() WHERE id=$1`, membership); err != nil {
 				t.Fatal(err)
 			}
 			membership = id(`INSERT INTO security_team_memberships(team_id,principal_id,role) VALUES ($1,$2,'operator') RETURNING id`, team, principal)
+			if stale, err := d.ResolveWorkspaceMembership(context.Background(), principal, 1, workspace); stale != nil || !errors.Is(err, ErrWorkspaceAccessDenied) {
+				t.Fatalf("stale session gained new membership: %+v err=%v", stale, err)
+			}
 		}
 	}
 	for _, query := range []string{
@@ -132,7 +137,7 @@ func TestResolveWorkspaceMembership(t *testing.T) {
 	deny(principal, workspace)
 	revoke(expired)
 	current := id(`INSERT INTO security_team_memberships(team_id,principal_id,role) VALUES ($1,$2,'operator') RETURNING id`, team, principal)
-	if _, err := d.ResolveWorkspaceMembership(context.Background(), principal, workspace); err != nil {
+	if _, err := d.ResolveWorkspaceMembership(context.Background(), principal, epoch, workspace); err != nil {
 		t.Fatalf("new grant not resolved: %v", err)
 	}
 	revoke(current)
@@ -140,10 +145,10 @@ func TestResolveWorkspaceMembership(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if got, err := d.ResolveWorkspaceMembership(ctx, principal, workspace); got != nil || err == nil {
+	if got, err := d.ResolveWorkspaceMembership(ctx, principal, epoch, workspace); got != nil || err == nil {
 		t.Fatalf("cancelled lookup must fail closed: got=%+v err=%v", got, err)
 	}
-	if got, err := (*DB)(nil).ResolveWorkspaceMembership(context.Background(), principal, workspace); got != nil || err == nil {
+	if got, err := (*DB)(nil).ResolveWorkspaceMembership(context.Background(), principal, epoch, workspace); got != nil || err == nil {
 		t.Fatalf("unavailable store must fail closed: got=%+v err=%v", got, err)
 	}
 }

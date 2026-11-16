@@ -54,7 +54,7 @@ func TestPrincipalGenerationMigrationQuarantinesExistingGrants(t *testing.T) {
 	if err := d.QueryRow(`SELECT principal_auth_epoch FROM security_team_memberships WHERE id=$1`, grant).Scan(&epoch); err != nil || epoch.Valid {
 		t.Fatalf("prior grant generation was inferred: epoch=%+v err=%v", epoch, err)
 	}
-	if got, err := d.ResolveWorkspaceMembership(context.Background(), principal, workspace); got != nil || !errors.Is(err, ErrWorkspaceAccessDenied) {
+	if got, err := d.ResolveWorkspaceMembership(context.Background(), principal, 1, workspace); got != nil || !errors.Is(err, ErrWorkspaceAccessDenied) {
 		t.Fatalf("old grant was authorized: %+v err=%v", got, err)
 	}
 	if _, err := d.Exec(`UPDATE security_team_memberships SET principal_auth_epoch=1 WHERE id=$1`, grant); err == nil {
@@ -66,7 +66,7 @@ func TestPrincipalGenerationMigrationQuarantinesExistingGrants(t *testing.T) {
 	if _, err := d.Exec(`INSERT INTO security_team_memberships(team_id,principal_id,role) VALUES ($1,$2,'operator')`, team, principal); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := d.ResolveWorkspaceMembership(context.Background(), principal, workspace); got == nil || err != nil {
+	if got, err := d.ResolveWorkspaceMembership(context.Background(), principal, 1, workspace); got == nil || err != nil {
 		t.Fatalf("explicit new grant unavailable: %+v err=%v", got, err)
 	}
 }
@@ -132,7 +132,7 @@ func TestMembershipIssuanceSerializesWithPrincipalDisable(t *testing.T) {
 	if _, err := d.Exec(`UPDATE security_principals SET enabled=true WHERE id=$1`, principal); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := d.ResolveWorkspaceMembership(context.Background(), principal, workspace); got != nil || !errors.Is(err, ErrWorkspaceAccessDenied) {
+	if got, err := d.ResolveWorkspaceMembership(context.Background(), principal, 2, workspace); got != nil || !errors.Is(err, ErrWorkspaceAccessDenied) {
 		t.Fatalf("disable/re-enable restored a grant: %+v err=%v", got, err)
 	}
 }

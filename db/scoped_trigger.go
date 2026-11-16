@@ -39,7 +39,7 @@ JOIN security_workspace_agents wa ON wa.agent_id=a.id AND wa.workspace_id=w.id
 JOIN security_workspace_tasks wt ON wt.workspace_id=w.id
 JOIN tasks t ON t.id=wt.task_id AND t.deleted_at IS NULL
 JOIN activity r ON r.exploration_id=t.exploration_id AND r.kind='tool_result' AND r.tool <> ''
-WHERE b.enabled AND b.trigger_id=$1 AND b.workspace_id=$2 AND b.principal_id=$3
+WHERE b.enabled AND b.trigger_id=$1 AND b.workspace_id=$2 AND b.principal_id=$3 AND p.auth_epoch=$7
   AND m.role IN ('operator','manager') AND m.revoked_at IS NULL
   AND m.valid_from <= statement_timestamp() AND (m.expires_at IS NULL OR m.expires_at > statement_timestamp())
   AND r.id > $4 AND ($5::bigint = 0 OR r.id=$5)
@@ -48,15 +48,15 @@ WHERE b.enabled AND b.trigger_id=$1 AND b.workspace_id=$2 AND b.principal_id=$3
 ORDER BY r.id LIMIT $6`
 
 // ScopedToolEvents lists only metadata belonging to the bound workspace and
-// principal. principalID MUST come from a verified service/human identity, never
+// principal. principalID and authEpoch MUST come from a verified identity, never
 // user data, a JWT claim without verification, an agent prompt or tool output.
 // A caller must recheck with ScopedToolEventForDispatch immediately before any
 // delivery. Queue persistence, leases and interrupt-on-revocation remain required.
-func (d *DB) ScopedToolEvents(ctx context.Context, principalID, workspaceID, triggerID, afterID int64, limit int) ([]ScopedToolEvent, error) {
-	if d == nil || d.DB == nil || principalID <= 0 || workspaceID <= 0 || triggerID <= 0 || afterID < 0 || limit < 1 || limit > 1000 {
+func (d *DB) ScopedToolEvents(ctx context.Context, principalID, authEpoch, workspaceID, triggerID, afterID int64, limit int) ([]ScopedToolEvent, error) {
+	if ctx == nil || d == nil || d.DB == nil || principalID <= 0 || authEpoch <= 0 || workspaceID <= 0 || triggerID <= 0 || afterID < 0 || limit < 1 || limit > 1000 {
 		return nil, ErrWorkspaceAccessDenied
 	}
-	rows, err := d.QueryContext(ctx, scopedToolEventsSQL, triggerID, workspaceID, principalID, afterID, int64(0), limit)
+	rows, err := d.QueryContext(ctx, scopedToolEventsSQL, triggerID, workspaceID, principalID, afterID, int64(0), limit, authEpoch)
 	if err != nil {
 		return nil, fmt.Errorf("query scoped trigger events: %w", err)
 	}
@@ -77,12 +77,12 @@ func (d *DB) ScopedToolEvents(ctx context.Context, principalID, workspaceID, tri
 
 // ScopedToolEventForDispatch fetches the event again under current membership,
 // trigger and workspace state. A previously listed event is not a capability.
-func (d *DB) ScopedToolEventForDispatch(ctx context.Context, principalID, workspaceID, triggerID, activityID int64) (*ScopedToolEvent, error) {
-	if d == nil || d.DB == nil || principalID <= 0 || workspaceID <= 0 || triggerID <= 0 || activityID <= 0 {
+func (d *DB) ScopedToolEventForDispatch(ctx context.Context, principalID, authEpoch, workspaceID, triggerID, activityID int64) (*ScopedToolEvent, error) {
+	if ctx == nil || d == nil || d.DB == nil || principalID <= 0 || authEpoch <= 0 || workspaceID <= 0 || triggerID <= 0 || activityID <= 0 {
 		return nil, ErrWorkspaceAccessDenied
 	}
 	var e ScopedToolEvent
-	err := d.QueryRowContext(ctx, scopedToolEventsSQL, triggerID, workspaceID, principalID, activityID-1, activityID, 1).
+	err := d.QueryRowContext(ctx, scopedToolEventsSQL, triggerID, workspaceID, principalID, activityID-1, activityID, 1, authEpoch).
 		Scan(&e.TriggerID, &e.WorkspaceID, &e.TaskID, &e.ActivityID, &e.AgentKey, &e.Tool, &e.IsError)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrWorkspaceAccessDenied

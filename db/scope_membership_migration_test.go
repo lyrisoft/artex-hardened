@@ -94,10 +94,10 @@ func TestScopeMembershipMigrationQuarantinesUnboundRecords(t *testing.T) {
 	if err := d.QueryRow(`SELECT count(*) FROM security_team_memberships WHERE team_id=$1 AND principal_auth_epoch IS NULL`, team).Scan(&unbound); err != nil || unbound != 3 {
 		t.Fatalf("prior principal generations inferred: count=%d err=%v", unbound, err)
 	}
-	if _, err := d.ApprovedSyntheticScope(context.Background(), requester, workspace, proposal); !errors.Is(err, ErrWorkspaceAccessDenied) {
+	if _, err := d.ApprovedSyntheticScope(context.Background(), requester, 1, workspace, proposal); !errors.Is(err, ErrWorkspaceAccessDenied) {
 		t.Fatalf("unbound approval became readable: %v", err)
 	}
-	if _, err := d.ScopedToolEventForDispatch(context.Background(), owner, workspace, trigger.ID, activity); !errors.Is(err, ErrWorkspaceAccessDenied) {
+	if _, err := d.ScopedToolEventForDispatch(context.Background(), owner, 1, workspace, trigger.ID, activity); !errors.Is(err, ErrWorkspaceAccessDenied) {
 		t.Fatalf("unbound trigger became dispatchable: %v", err)
 	}
 	triggers, err := d.ListEnabledTriggers()
