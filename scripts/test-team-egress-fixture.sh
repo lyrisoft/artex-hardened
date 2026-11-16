@@ -33,8 +33,8 @@ trap cleanup EXIT
 
 docker pull nginx:alpine >/dev/null
 docker pull curlimages/curl:8.16.0 >/dev/null
-docker build -f security/fixture-team-guard/Dockerfile -t "$image" . >/dev/null
-docker build -f security/fixture-scanner/Dockerfile -t "$scanner_image" . >/dev/null
+docker build -f security/fixture-team-guard/Dockerfile -t "$image" security/fixture-team-guard >/dev/null
+docker build -f security/fixture-scanner/Dockerfile -t "$scanner_image" security/fixture-scanner >/dev/null
 stage="fixture targets"
 docker network create --internal --ipv6 --subnet 172.30.139.0/24 --subnet fd42:2f77:9c32::/64 "$network" >/dev/null
 docker run -d --name "$target_a" --network "$network" --ip 172.30.139.20 nginx:alpine >/dev/null
@@ -58,6 +58,16 @@ wait_control 'http://172.30.139.21:80/'
 docker exec "$target_a" /bin/sh -c 'printf "%s\n" "server { listen 80; listen 81; listen [::]:80; location / { return 200 fixture; } }" > /etc/nginx/conf.d/default.conf; nginx -s reload'
 wait_control 'http://172.30.139.20:81/'
 wait_control 'http://[fd42:2f77:9c32::21]:80/'
+
+stage="no-network fixture runner and confirmed cancellation"
+if ! command -v go >/dev/null 2>&1; then
+  echo "Go is required for the synthetic fixture runner test" >&2
+  exit 127
+fi
+fixture_image_id="$(docker image inspect --format '{{.Id}}' "$scanner_image")"
+ARTEX_SYNTHETIC_DOCKER_TEST=I_UNDERSTAND_DISPOSABLE_DOCKER_HOST_ONLY \
+ARTEX_FIXTURE_IMAGE_ID="$fixture_image_id" \
+  go test -count=1 -timeout 90s -run '^TestDockerNoNetworkSyntheticFixture$' ./security/fixtureexec
 
 stage="isolated guard startup"
 docker run -d --name "$guard_a" --network "$network" --cap-drop ALL --cap-add NET_ADMIN \

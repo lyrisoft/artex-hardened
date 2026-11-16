@@ -11,6 +11,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
       - name: Verify actual network namespace containment
         run: bash scripts/test-egress-integration.sh
       - name: Verify disposable no-network container hardening

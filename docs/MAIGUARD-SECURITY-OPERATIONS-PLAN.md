@@ -59,7 +59,7 @@ The program must close all of these paths before it claims isolation or enables 
 
 ### Phase 1 implementation checkpoint
 
-- Migrations 0004–0011 create inactive principal/workspace and scoped-trigger
+- Migrations 0004–0012 create inactive principal/workspace and scoped-trigger
   data, specialist/product catalogs and append-only synthetic-scope records. No
   principal, agent, trigger, credential or executor is enabled by these migrations.
   A lookup maps an already verified issuer, subject and kind to an enabled
@@ -168,6 +168,11 @@ The program must close all of these paths before it claims isolation or enables 
   proposal and approval operations, external execution, other databases and DB-owner
   bypasses are not covered by this barrier. It introduces a shared lock and may
   require transaction retries under contention. Restricted roles must be tested.
+- Migration 0012 pins security trigger lookups to the installed schema, with the
+  temporary schema last. In a synthetic reproduction, temporary tables bypassed
+  the 0011 barrier and spoofed a disabled principal; the new trigger settings deny
+  both cases. This does not secure unmounted Go queries or a caller with direct
+  database ownership, schema creation or trigger-alteration privileges.
 - The legacy scheduler excludes assigned tasks, agents and bound triggers from its
   global queries, retains source IDs through queue merges and rechecks before a
   legacy run. These checks are not atomic with runtime execution or data migration.
@@ -181,6 +186,17 @@ The program must close all of these paths before it claims isolation or enables 
   distinct team policy references). It does not launch, attest or isolate a real
   executor, verify an egress broker, or make a target safe. All execution remains
   legacy and shared-process until an owner-approved isolated executor is implemented.
+- `security/fixtureexec` is an unmounted, synthetic-only Docker runner. It creates
+  a pinned local image with no network or host mounts, a non-root UID, read-only
+  root, dropped capabilities, default seccomp, no-new-privileges and resource
+  limits, inspects the created configuration, bounds output, and confirms stop and
+  removal on cancellation. It admits one run per runner instance and poisons that
+  instance after an uncertain create or cleanup. It does not authenticate actors or
+  images, bind the database reservation, recover across processes/restarts, enforce
+  target-specific egress, issue credentials, connect to a model or launch ARTEX.
+  Docker host/daemon trust, independent authorization, service roles and an active
+  revocation supervisor remain necessary. Only disposable synthetic fixture data
+  may be used; the acknowledgement variable is not a security boundary.
 - Evidence-body reads verify the complete length and digest, retain the opened
   handle, and recheck bounded private chunks before returning bytes. Path swaps
   and in-place mutation after verification cannot substitute bytes in a read;
@@ -346,7 +362,9 @@ or scopes during migration. `0010_inactive_run_reservations.sql` adds an empty,
 single-live-slot ledger; it never auto-releases a reservation on expiry.
 `0011_inactive_admission_serialization.sql` adds a shared database serialization
 barrier and replaces the start guard to check fresh time after lock acquisition.
-No code in this branch starts a process or establishes a trusted stop attestation.
+`0012_security_trigger_search_path.sql` fixes trigger lookup resolution without
+rewriting existing records. No application path starts a team process or establishes
+a trusted stop attestation; a separate no-network synthetic fixture can be tested.
 On a disposable copy, verify the pre-migration backup, record its checksum and the
 applied migration checksums, upgrade, check legacy evidence/graphs, and run the
 negative membership and authorization suite before enabling any future feature.
@@ -389,7 +407,7 @@ Existing legacy execution has not been changed by this inactive schema.
 For a rollback rehearsal, stop admission and drain/terminate isolated leases, export
 and preserve all new membership/evidence/audit records, and verify backup integrity.
 Use a rollback build that retains the exact embedded bytes/checksums of all applied
-migrations 0004–0011 but disables the new feature; an older binary missing any
+migrations 0004–0012 but disables the new feature; an older binary missing any
 applied migration will refuse the newer migration record. Alternatively restore the verified pre-migration backup to
 a separate database and reconcile all writes since the snapshot before switching.
 Never remove the recorded checksum to force an older binary to start. Owner approval
@@ -475,6 +493,21 @@ is reviewed. A prior main-branch CI pass does not prove a new branch or runtime.
 
 ## Validation record
 
+- On 0011, a synthetic temporary-table shadow reproduced admission-barrier bypass
+  and issuance of a grant for a disabled principal. After 0012, targeted database
+  `go test -race -p 1 -count=1 -timeout 180s ./db -run ...` passed both exploit
+  regressions, an upgrade from 0011, a non-default schema, and the admission race
+  suite on fresh loopback-only PostgreSQL. Direct SQL and DB-owner bypass remain.
+- The no-network fixture runner's local `go test -race -p 1 -count=1
+  ./security/fixtureexec` and `bash -n scripts/test-team-egress-fixture.sh` passed.
+  Fake Docker tests cover unsafe configuration, concurrent requests, cancellation,
+  uncertain create/cleanup and output bounds. A full build, vet, `go test -p 1
+  -count=1 -timeout 240s ./...`, and `go test -race -p 1 -count=1 -timeout 240s
+  ./db ./security/fixtureexec ./server` passed on fresh synthetic PostgreSQL before
+  the final fixture-only network-inspection changes; the final fixture package's
+  build, vet and race tests passed afterward. Docker is unavailable locally; the
+  real container, live denied-network control and cancellation test must pass in
+  the disposable GitHub Actions run before its results can be claimed.
 - Focused `go test -race -p 1 -count=1 ./evidence -run ...` passed after
   adding chunk-verified reads. Tests replace a path, alter a file in place before
   and during delivery, verify partial cross-chunk reads, seek and read concurrently.
