@@ -29,25 +29,23 @@ trap cleanup EXIT
 # Resolve the public fixture image to its local content ID for all invocations.
 # This tag is used only on the disposable CI host and is not a production image.
 docker pull alpine:3.22 >/dev/null
+docker pull nginx:alpine >/dev/null
 image_id="$(docker image inspect --format '{{.Id}}' alpine:3.22)"
 if [[ ! "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
   echo "FAIL: fixture image has an unexpected content ID" >&2
   exit 1
 fi
 stage="fixture network and target"
-docker network create --internal "$network" >/dev/null
-docker run -d --name "$server" --network "$network" "$image_id" /bin/sh -c \
-  'mkdir -p /www; echo synthetic-fixture > /www/index.html; exec httpd -f -p 8080 -h /www' >/dev/null
-target_ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$server")"
-if [[ ! "$target_ip" =~ ^[0-9.]+$ ]]; then
-  echo "FAIL: synthetic target has no IPv4 address" >&2
-  exit 1
-fi
+# Explicit subnet and address avoid relying on dynamically populated inspect
+# fields; the positive control below verifies the target actually responds.
+target_ip=172.30.138.20
+docker network create --internal --subnet 172.30.138.0/24 "$network" >/dev/null
+docker run -d --name "$server" --network "$network" --ip "$target_ip" nginx:alpine >/dev/null
 stage="synthetic target positive control"
 # This positive control proves the target and network work independently of the
 # isolated container's negative connection test.
 for n in 1 2 3 4 5 6 7 8 9 10; do
-  if docker run --rm --network "$network" "$image_id" wget -q -O - -T 3 "http://${target_ip}:8080/" | grep -q synthetic-fixture; then
+  if docker run --rm --network "$network" "$image_id" wget -q -O - -T 3 "http://${target_ip}:80/" | grep -q "Welcome to nginx"; then
     break
   fi
   if [[ "$n" -eq 10 ]]; then echo "FAIL: synthetic target unavailable" >&2; exit 1; fi
@@ -85,7 +83,7 @@ docker create --name "$runner" --network none --user 65532:65532 --read-only \
     if touch /artex-forbidden 2>/dev/null; then echo "writable root" >&2; exit 1; fi
     echo synthetic > /tmp/fixture
     test "$(cat /tmp/fixture)" = synthetic
-    if wget -q -O /dev/null -T 3 "http://$1:8080/" 2>/dev/null; then
+    if wget -q -O /dev/null -T 3 "http://$1:80/" 2>/dev/null; then
       echo "network-none container reached target" >&2; exit 1
     fi
     echo "PASS: disposable no-network container passed hardening checks"
