@@ -11,10 +11,11 @@ import (
 // SecurityPrincipal is a persisted human or service identity. It conveys no
 // workspace membership, role, target access or permission to perform an action.
 type SecurityPrincipal struct {
-	ID      int64
-	Kind    string
-	Issuer  string
-	Subject string
+	ID        int64
+	AuthEpoch int64
+	Kind      string
+	Issuer    string
+	Subject   string
 }
 
 var ErrPrincipalAccessDenied = errors.New("principal access denied")
@@ -30,7 +31,7 @@ func (d *DB) ResolveVerifiedPrincipal(ctx context.Context, issuer, subject, kind
 		return nil, ErrPrincipalAccessDenied
 	}
 	var p SecurityPrincipal
-	err := d.QueryRowContext(ctx, `SELECT id,kind,issuer,subject FROM security_principals WHERE issuer=$1 AND subject=$2 AND kind=$3 AND enabled`, issuer, subject, kind).Scan(&p.ID, &p.Kind, &p.Issuer, &p.Subject)
+	err := d.QueryRowContext(ctx, `SELECT id,auth_epoch,kind,issuer,subject FROM security_principals WHERE issuer=$1 AND subject=$2 AND kind=$3 AND enabled`, issuer, subject, kind).Scan(&p.ID, &p.AuthEpoch, &p.Kind, &p.Issuer, &p.Subject)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrPrincipalAccessDenied
 	}

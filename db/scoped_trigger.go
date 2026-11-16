@@ -33,7 +33,7 @@ JOIN security_workspaces w ON w.id=b.workspace_id AND w.enabled
 JOIN security_teams team ON team.id=w.team_id AND team.tenant_id=w.tenant_id AND team.enabled
 JOIN security_tenants tenant ON tenant.id=w.tenant_id AND tenant.enabled
 JOIN security_principals p ON p.id=b.principal_id AND p.enabled
-JOIN security_team_memberships m ON m.id=b.owner_membership_id AND m.principal_id=p.id AND m.team_id=team.id
+JOIN security_team_memberships m ON m.id=b.owner_membership_id AND m.principal_id=p.id AND m.team_id=team.id AND m.principal_auth_epoch=p.auth_epoch
 JOIN agents a ON a.key=tr.agent_key AND a.enabled
 JOIN security_workspace_agents wa ON wa.agent_id=a.id AND wa.workspace_id=w.id
 JOIN security_workspace_tasks wt ON wt.workspace_id=w.id

@@ -1,9 +1,10 @@
-# Issue #5: decisions for a synthetic-only pilot
+# Issue #5: approved synthetic-only design direction
 
-**Decision requested:** approve the three recommended defaults below and name a
-security owner, or identify a specific exception. This is design approval only:
-it does not authorize deployment, access changes, agent activation, or a test.
-If the required existing infrastructure is unavailable, keep the pilot disabled.
+**Design direction approved:** the owner approved the three defaults below on
+2026-11-16. This does not authorize deployment, access changes, agent activation,
+or a pilot. The actual identity provider, host, trust roots, independent evidence
+store and responsible owners still need to be identified before a separately
+approved pilot. If the required infrastructure is unavailable, keep it disabled.
 
 ## 1. Identity and bootstrap
 

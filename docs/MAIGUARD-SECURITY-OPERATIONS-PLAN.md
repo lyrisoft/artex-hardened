@@ -11,8 +11,8 @@ separate feature branch and PR against `main`; do not merge without authorizatio
 The [program reference](https://docs.google.com/document/d/17cRcQhk2Bm4WOQ-SVkhJOmsyo6PZXWVmZORJmhu3B3c/edit)
 is a proposal, not a grant of target access. Use disposable synthetic targets and
 records for development and tests; no customer data or production credentials.
-The [owner decision brief](PHASE1-OWNER-DECISIONS.md) recommends a minimal,
-synthetic-only pilot direction and identifies its operational approval gates.
+The [owner decision brief](PHASE1-OWNER-DECISIONS.md) records the approved
+synthetic-only design direction and its separate operational approval gates.
 
 ## Baseline and design checkpoint
 
@@ -59,13 +59,26 @@ The program must close all of these paths before it claims isolation or enables 
 
 ### Phase 1 implementation checkpoint
 
-- Migrations 0004–0007 create inactive principal/workspace and scoped-trigger
+- Migrations 0004–0008 create inactive principal/workspace and scoped-trigger
   data, specialist/product catalogs and append-only synthetic-scope records. No
   principal, agent, trigger, credential or executor is enabled by these migrations.
   A lookup maps an already verified issuer, subject and kind to an enabled
   persisted principal; it does not verify credentials or choose an identity provider.
   Legacy records are not automatically assigned or quarantined; legacy HTTP routes
   still use the shared identity and can access data outside these proposed checks.
+- An independently constructed OIDC authorization-code flow uses PKCE S256,
+  one-time state and nonce, an explicit HTTPS provider-origin allowlist and
+  short-lived opaque server-side sessions. It resolves only already-provisioned
+  humans and rechecks their revocation generation on each request. A separate
+  read-only team handler exposes only scoped workspace and task summaries; it
+  has no fallback to the legacy API and checks membership and generation in the
+  same query as each read. Neither component is mounted by the current server.
+  It does not provide task execution, secrets, evidence, approvals, a frontend,
+  provider-side revocation, or tenant isolation from the shared legacy process.
+  Sessions are in memory and do not survive restart. Per-client login rate limits,
+  provider configuration, independent deployment and security review remain. The
+  verifier also rejects ambiguous or case-variant reserved JWT keys before
+  signature verification. No real provider has been configured or contacted.
 - `AuthorizeWorkspaceAction` checks current membership and a directly assigned
   agent or task for a narrow set of CRUD actions. Scheduling/execution, evidence,
   secrets, tool/MCP calls, approval decisions and protected detection changes deny
@@ -103,12 +116,14 @@ The program must close all of these paths before it claims isolation or enables 
   no proposal or approval authorizes a network action.
 - Scope proposals, approvals and scoped trigger bindings now refer to the exact
   membership grant that created them. A revoked grant cannot be restored or edited;
-  a new grant does not revive old approvals or bindings. Re-enabling a disabled
-  identity, tenant, team or workspace can still restore access if its grant was not
-  revoked. Principal issuer, subject and kind can still be changed in the database;
-  an identity integration must prevent reassignment from transferring existing
-  grants, or bind grants to immutable identity versions, before activation.
-  Active-run revocation and independent administration also need design and tests.
+  a new grant does not revive old approvals or bindings. Migration 0008 prevents
+  ordinary reassignment of a principal identity and increments its authentication
+  generation on disable; old sessions and grants do not revive on re-enable. New
+  grants require an enabled principal and serialize with a concurrent disable.
+  Older grants without a recorded generation remain unbound. Re-enabling a disabled
+  tenant, team or workspace can still restore access if its grant was not revoked.
+  A DB owner can bypass these triggers; active-run revocation and independent
+  administration remain incomplete.
   Migration 0007 preserves older unbound records but does not infer their grants;
   they remain unavailable to the new lookup until handled by an approved process.
 - The legacy scheduler excludes assigned tasks, agents and bound triggers from its
@@ -125,8 +140,11 @@ The program must close all of these paths before it claims isolation or enables 
   executor, verify an egress broker, or make a target safe. All execution remains
   legacy and shared-process until an owner-approved isolated executor is implemented.
 
-Owner decisions before operational rollout (the proposed defaults below are
-engineering directions, not authorization):
+The owner approved the design direction on 2026-11-16: use an existing OIDC
+provider, one nonproduction VM with separate per-team execution and synthetic
+credentials, and independently controlled evidence with audited, redacted sharing.
+This is not authorization to provision access, deploy, activate agents or run a
+pilot. Concrete inputs and separate operational approvals still required:
 
 1. Select and independently provision the human identity provider, service
    identity issuance/revocation, initial owner and independent approver bootstrap.
@@ -255,7 +273,10 @@ catalog rows, leaves existing tasks/agents untouched, and does not assign owners
 and revocation records. `0007_scope_membership_bindings.sql` adds nullable grant
 references and makes grant fields and revocation immutable. It leaves earlier
 records unbound rather than inferring ownership; review and recreate any needed
-proposals or bindings through an authorized process. These migrations add no live
+proposals or bindings through an authorized process. `0008_immutable_principal_identity.sql`
+rejects in-place identity reassignment, advances a revocation generation on
+disable and leaves existing grants without an inferred generation. Those grants
+must be explicitly reviewed, revoked and recreated before use. These migrations add no live
 bindings or scopes during migration.
 On a disposable copy, verify the pre-migration backup, record its checksum and the
 applied migration checksums, upgrade, check legacy evidence/graphs, and run the
@@ -265,7 +286,7 @@ No migration makes old shared-password sessions trustworthy.
 For a rollback rehearsal, stop admission and drain/terminate isolated leases, export
 and preserve all new membership/evidence/audit records, and verify backup integrity.
 Use a rollback build that retains the exact embedded bytes/checksums of all applied
-migrations 0004–0007 but disables the new feature; an older binary missing any
+migrations 0004–0008 but disables the new feature; an older binary missing any
 applied migration will refuse the newer migration record. Alternatively restore the verified pre-migration backup to
 a separate database and reconcile all writes since the snapshot before switching.
 Never remove the recorded checksum to force an older binary to start. Owner approval
@@ -386,6 +407,14 @@ is reviewed. A prior main-branch CI pass does not prove a new branch or runtime.
   -timeout 180s ./agent ./server` passed on another fresh fixture, as did
   `go vet -p 2 ./agent ./server` and a Go build. Those earlier checks did not
   validate malformed skill metadata or establish team isolation.
+- After the isolated OIDC and read-only team handler changes, `go build -p 2
+  ./...`, `go vet -p 2 ./...`, `go test -p 1 -count=1 -timeout 240s ./...`,
+  and the CI package list with `go test -race -p 1 -count=1 -timeout 420s`
+  passed using fresh loopback-only synthetic PostgreSQL databases and a fake TLS
+  identity provider. The signed-token, callback, session, cross-tenant and
+  upgrade-quarantine regressions passed. A subsequent membership issuance fix was
+  tested separately against PostgreSQL; its final full-suite results are recorded
+  in the PR. Existing skips remain, and no real IdP or isolated executor was used.
 - On this Phase 1 branch, `go test -p 1 -count=1 ./...` passed on a fresh,
   loopback-only synthetic PostgreSQL fixture after updating the migration inventory
   and a manually constructed chat-worker test to use its own live policy store.

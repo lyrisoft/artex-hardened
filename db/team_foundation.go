@@ -45,7 +45,7 @@ FROM security_workspaces w
 JOIN security_teams team ON team.id=w.team_id AND team.tenant_id=w.tenant_id
 JOIN security_tenants tenant ON tenant.id=w.tenant_id
 JOIN security_team_memberships m ON m.team_id=team.id
-JOIN security_principals p ON p.id=m.principal_id
+JOIN security_principals p ON p.id=m.principal_id AND m.principal_auth_epoch=p.auth_epoch
 WHERE w.id=$1 AND p.id=$2
   AND w.enabled AND team.enabled AND tenant.enabled AND p.enabled
   AND m.revoked_at IS NULL AND m.valid_from <= statement_timestamp()

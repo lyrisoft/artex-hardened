@@ -45,7 +45,7 @@ JOIN security_teams team ON team.id=w.team_id AND team.tenant_id=w.tenant_id AND
 JOIN security_tenants tenant ON tenant.id=w.tenant_id AND tenant.enabled
 JOIN security_team_memberships m ON m.team_id=team.id AND m.role IN ('operator','manager') AND m.revoked_at IS NULL
  AND m.valid_from <= statement_timestamp() AND (m.expires_at IS NULL OR m.expires_at > statement_timestamp())
-JOIN security_principals p ON p.id=m.principal_id AND p.kind='human' AND p.enabled
+JOIN security_principals p ON p.id=m.principal_id AND m.principal_auth_epoch=p.auth_epoch AND p.kind='human' AND p.enabled
 JOIN security_workspace_tasks wt ON wt.workspace_id=w.id
 JOIN tasks t ON t.id=wt.task_id AND t.deleted_at IS NULL
 WHERE w.enabled AND w.id=$2 AND p.id=$1 AND t.id=$3 AND $7 > statement_timestamp()
@@ -81,10 +81,10 @@ JOIN security_teams team ON team.id=w.team_id AND team.tenant_id=w.tenant_id AND
 JOIN security_tenants tenant ON tenant.id=w.tenant_id AND tenant.enabled
 JOIN security_team_memberships m ON m.team_id=team.id AND m.role='approver' AND m.revoked_at IS NULL
  AND m.valid_from <= statement_timestamp() AND (m.expires_at IS NULL OR m.expires_at > statement_timestamp())
-JOIN security_principals p ON p.id=m.principal_id AND p.kind='human' AND p.enabled
+JOIN security_principals p ON p.id=m.principal_id AND m.principal_auth_epoch=p.auth_epoch AND p.kind='human' AND p.enabled
 JOIN security_principals requester ON requester.id=proposal.requester_id AND requester.kind='human' AND requester.enabled
 JOIN security_team_memberships requester_m ON requester_m.id=proposal.requester_membership_id
- AND requester_m.team_id=team.id AND requester_m.principal_id=requester.id
+ AND requester_m.team_id=team.id AND requester_m.principal_id=requester.id AND requester_m.principal_auth_epoch=requester.auth_epoch
  AND requester_m.role IN ('operator','manager') AND requester_m.revoked_at IS NULL
  AND requester_m.valid_from <= statement_timestamp() AND (requester_m.expires_at IS NULL OR requester_m.expires_at > statement_timestamp())
 JOIN security_workspace_tasks wt ON wt.workspace_id=w.id AND wt.task_id=proposal.task_id
@@ -130,7 +130,7 @@ JOIN security_teams team ON team.id=w.team_id AND team.tenant_id=w.tenant_id AND
 JOIN security_tenants tenant ON tenant.id=w.tenant_id AND tenant.enabled
 JOIN security_team_memberships m ON m.team_id=team.id AND m.role='approver' AND m.revoked_at IS NULL
  AND m.valid_from <= statement_timestamp() AND (m.expires_at IS NULL OR m.expires_at > statement_timestamp())
-JOIN security_principals p ON p.id=m.principal_id AND p.kind='human' AND p.enabled
+JOIN security_principals p ON p.id=m.principal_id AND m.principal_auth_epoch=p.auth_epoch AND p.kind='human' AND p.enabled
 WHERE proposal.id=$2 AND p.id=$1 RETURNING proposal_id`, revokerID, proposalID, reason).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrWorkspaceAccessDenied
@@ -161,17 +161,17 @@ JOIN security_workspace_tasks wt ON wt.workspace_id=w.id AND wt.task_id=proposal
 JOIN tasks t ON t.id=wt.task_id AND t.deleted_at IS NULL
 JOIN security_principals requester ON requester.id=proposal.requester_id AND requester.enabled AND requester.kind='human'
 JOIN security_team_memberships requester_m ON requester_m.id=proposal.requester_membership_id
- AND requester_m.team_id=team.id AND requester_m.principal_id=requester.id
+ AND requester_m.team_id=team.id AND requester_m.principal_id=requester.id AND requester_m.principal_auth_epoch=requester.auth_epoch
  AND requester_m.role IN ('operator','manager') AND requester_m.revoked_at IS NULL
  AND requester_m.valid_from<=statement_timestamp() AND (requester_m.expires_at IS NULL OR requester_m.expires_at>statement_timestamp())
 JOIN security_principals approver ON approver.id=approval.approver_id AND approver.enabled AND approver.kind='human'
 JOIN security_team_memberships approver_m ON approver_m.id=approval.approver_membership_id
- AND approver_m.team_id=team.id AND approver_m.principal_id=approver.id
+ AND approver_m.team_id=team.id AND approver_m.principal_id=approver.id AND approver_m.principal_auth_epoch=approver.auth_epoch
  AND approver_m.role='approver' AND approver_m.revoked_at IS NULL
  AND approver_m.valid_from<=statement_timestamp() AND (approver_m.expires_at IS NULL OR approver_m.expires_at>statement_timestamp())
 JOIN security_principals reader ON reader.id=$1 AND reader.enabled AND reader.kind='human'
  AND (reader.id=proposal.requester_id OR reader.id=approval.approver_id)
-JOIN security_team_memberships reader_m ON reader_m.team_id=team.id AND reader_m.principal_id=reader.id
+JOIN security_team_memberships reader_m ON reader_m.team_id=team.id AND reader_m.principal_id=reader.id AND reader_m.principal_auth_epoch=reader.auth_epoch
  AND reader_m.role IN ('viewer','operator','manager','approver') AND reader_m.revoked_at IS NULL
  AND reader_m.valid_from<=statement_timestamp() AND (reader_m.expires_at IS NULL OR reader_m.expires_at>statement_timestamp())
 WHERE w.id=$2 AND proposal.id=$3 AND proposal.environment='synthetic'

@@ -28,6 +28,12 @@ func TestResolveWorkspaceMembership(t *testing.T) {
 	workspace := id(`INSERT INTO security_workspaces(tenant_id,team_id,name) VALUES ($1,$2,'red workspace') RETURNING id`, tenant, team)
 	otherTeam := id(`INSERT INTO security_teams(tenant_id,kind,name) VALUES ($1,'blue','blue') RETURNING id`, tenant)
 	otherWorkspace := id(`INSERT INTO security_workspaces(tenant_id,team_id,name) VALUES ($1,$2,'blue workspace') RETURNING id`, tenant, otherTeam)
+	if _, err := d.Exec(`INSERT INTO security_team_memberships(team_id,principal_id,role) VALUES ($1,$2,'operator')`, team, principal); err == nil {
+		t.Fatal("grant issued to a disabled principal")
+	}
+	if _, err := d.Exec(`UPDATE security_principals SET enabled=true WHERE id=$1`, principal); err != nil {
+		t.Fatal(err)
+	}
 	membership := id(`INSERT INTO security_team_memberships(team_id,principal_id,role) VALUES ($1,$2,'operator') RETURNING id`, team, principal)
 	deny := func(principalID, workspaceID int64) {
 		t.Helper()
@@ -36,7 +42,7 @@ func TestResolveWorkspaceMembership(t *testing.T) {
 			t.Fatalf("principal=%d workspace=%d: got=%+v err=%v; want generic denial", principalID, workspaceID, got, err)
 		}
 	}
-	deny(principal, workspace) // all entities are disabled by default
+	deny(principal, workspace) // tenant, team, and workspace are disabled by default
 	for _, q := range []string{
 		`UPDATE security_tenants SET enabled=true WHERE id=$1`,
 		`UPDATE security_principals SET enabled=true WHERE id=$1`,
@@ -89,6 +95,14 @@ func TestResolveWorkspaceMembership(t *testing.T) {
 		deny(principal, workspace)
 		if _, err := d.Exec(tc.enable, tc.id); err != nil {
 			t.Fatalf("enable %s: %v", tc.name, err)
+		}
+		if tc.name == "principal" {
+			// Re-enabling the identity must not revive a pre-disable grant.
+			deny(principal, workspace)
+			if _, err := d.Exec(`UPDATE security_team_memberships SET revoked_at=now() WHERE id=$1`, membership); err != nil {
+				t.Fatal(err)
+			}
+			membership = id(`INSERT INTO security_team_memberships(team_id,principal_id,role) VALUES ($1,$2,'operator') RETURNING id`, team, principal)
 		}
 	}
 	for _, query := range []string{

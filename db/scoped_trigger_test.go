@@ -117,6 +117,17 @@ func TestScopedTriggerFiltersBeforeDisclosureAndRechecks(t *testing.T) {
 	if _, err := d.ScopedToolEventForDispatch(ctx, principal, rw, tr.ID, redEvent); err != nil {
 		t.Fatalf("dispatch recheck: %v", err)
 	}
+	exec(`UPDATE security_principals SET enabled=false WHERE id=$1`, principal)
+	exec(`UPDATE security_principals SET enabled=true WHERE id=$1`, principal)
+	if len(list(principal, rw)) != 0 {
+		t.Fatal("identity disable/re-enable revived a trigger grant")
+	}
+	exec(`UPDATE security_team_memberships SET revoked_at=now() WHERE id=$1`, member)
+	member = id(`INSERT INTO security_team_memberships(team_id,principal_id,role) VALUES ($1,$2,'operator') RETURNING id`, red, principal)
+	exec(`UPDATE security_scoped_trigger_bindings SET owner_membership_id=$2 WHERE trigger_id=$1`, tr.ID, member)
+	if len(list(principal, rw)) != 1 {
+		t.Fatal("explicitly rebound trigger did not use the new grant")
+	}
 	exec(`UPDATE security_team_memberships SET revoked_at=now() WHERE id=$1`, member)
 	if len(list(principal, rw)) != 0 {
 		t.Fatal("revoked owner can still list")

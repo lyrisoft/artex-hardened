@@ -101,6 +101,12 @@ func TestTeamFoundationMigration(t *testing.T) {
 	if _, err := d.Exec(`INSERT INTO security_teams(tenant_id,kind,name) VALUES ($1,'unknown','bad')`, tenantA); err == nil {
 		t.Fatal("unknown team kind accepted")
 	}
+	if _, err := d.Exec(`INSERT INTO security_team_memberships(team_id,principal_id,role) VALUES ($1,$2,'viewer')`, red, principal); err == nil {
+		t.Fatal("grant issued to a disabled principal")
+	}
+	if _, err := d.Exec(`UPDATE security_principals SET enabled=true WHERE id=$1`, principal); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := d.Exec(`INSERT INTO security_team_memberships(team_id,principal_id,role) VALUES ($1,$2,'superuser')`, red, principal); err == nil {
 		t.Fatal("unknown membership role accepted")
 	}

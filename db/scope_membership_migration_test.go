@@ -90,6 +90,10 @@ func TestScopeMembershipMigrationQuarantinesUnboundRecords(t *testing.T) {
 	if !bytes.Equal(gotDocument, document) || !bytes.Equal(gotHash, hash[:]) || requesterGrant.Valid || approverGrant.Valid || ownerGrant.Valid {
 		t.Fatal("migration changed prior evidence or inferred a membership grant")
 	}
+	var unbound int
+	if err := d.QueryRow(`SELECT count(*) FROM security_team_memberships WHERE team_id=$1 AND principal_auth_epoch IS NULL`, team).Scan(&unbound); err != nil || unbound != 3 {
+		t.Fatalf("prior principal generations inferred: count=%d err=%v", unbound, err)
+	}
 	if _, err := d.ApprovedSyntheticScope(context.Background(), requester, workspace, proposal); !errors.Is(err, ErrWorkspaceAccessDenied) {
 		t.Fatalf("unbound approval became readable: %v", err)
 	}

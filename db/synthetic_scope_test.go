@@ -110,6 +110,11 @@ func TestSyntheticScopeApprovalIsAppendOnlyAndRevocable(t *testing.T) {
 			t.Fatalf("mutation allowed: %s", q)
 		}
 	}
+	exec(`UPDATE security_principals SET enabled=false WHERE id=$1`, approver)
+	exec(`UPDATE security_principals SET enabled=true WHERE id=$1`, approver)
+	if _, err := d.ApprovedSyntheticScope(ctx, requester, workspace, proposal); !errors.Is(err, ErrWorkspaceAccessDenied) {
+		t.Fatalf("re-enabled approver revived old approval: %v", err)
+	}
 	exec(`UPDATE security_team_memberships SET revoked_at=now() WHERE team_id=$1 AND principal_id=$2`, team, approver)
 	if _, err := d.ApprovedSyntheticScope(ctx, requester, workspace, proposal); !errors.Is(err, ErrWorkspaceAccessDenied) {
 		t.Fatalf("revoked approver: %v", err)
