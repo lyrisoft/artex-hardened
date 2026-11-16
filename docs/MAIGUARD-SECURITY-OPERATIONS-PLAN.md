@@ -59,7 +59,7 @@ The program must close all of these paths before it claims isolation or enables 
 
 ### Phase 1 implementation checkpoint
 
-- Migrations 0004–0008 create inactive principal/workspace and scoped-trigger
+- Migrations 0004–0009 create inactive principal/workspace and scoped-trigger
   data, specialist/product catalogs and append-only synthetic-scope records. No
   principal, agent, trigger, credential or executor is enabled by these migrations.
   A lookup maps an already verified issuer, subject and kind to an enabled
@@ -134,8 +134,14 @@ The program must close all of these paths before it claims isolation or enables 
   The inactive membership, action, scope-decision and trigger-query helpers now
   require the authenticated principal generation and check it in their SQL;
   callers must derive it from verified authentication, never request or event data.
-  A DB owner can bypass these triggers; active-run revocation and independent
-  administration remain incomplete.
+  Migration 0009 also prevents ordinary in-place team/workspace ownership
+  changes, erasure or transfer of assignments, deletion of identity/grant
+  history, and deletion or reassignment of a scoped trigger binding. Disabling a
+  trigger binding remains possible; a new grant needs a new binding on a new
+  trigger. No audited ownership-transfer procedure exists yet. Inserts and the
+  shared legacy process still require separate role restrictions. A DB owner can
+  bypass these triggers; active-run revocation and independent administration
+  remain incomplete.
   Migration 0007 preserves older unbound records but does not infer their grants;
   they remain unavailable to the new lookup until handled by an approved process.
 - The legacy scheduler excludes assigned tasks, agents and bound triggers from its
@@ -287,9 +293,15 @@ references and makes grant fields and revocation immutable. It leaves earlier
 records unbound rather than inferring ownership; review and recreate any needed
 proposals or bindings through an authorized process. `0008_immutable_principal_identity.sql`
 rejects in-place identity reassignment, advances a revocation generation on
-disable and leaves existing grants without an inferred generation. Those grants
-must be explicitly reviewed, revoked and recreated before use. These migrations add no live
-bindings or scopes during migration.
+disable and leaves existing grants without an inferred generation. New grants
+require an enabled principal and serialize with disablement. Old grants must be
+explicitly reviewed, revoked and recreated before use.
+`0009_immutable_team_ownership.sql` preserves existing ownership while rejecting
+ordinary team/workspace reassignment, deletion of identity and grant history,
+assignment movement, and removal or reassignment of trigger bindings. A disabled
+trigger can be replaced by a separately authorized new trigger; transfers need a
+future independently controlled procedure. These migrations add no live bindings
+or scopes during migration.
 On a disposable copy, verify the pre-migration backup, record its checksum and the
 applied migration checksums, upgrade, check legacy evidence/graphs, and run the
 negative membership and authorization suite before enabling any future feature.
@@ -332,7 +344,7 @@ Existing legacy execution has not been changed by this inactive schema.
 For a rollback rehearsal, stop admission and drain/terminate isolated leases, export
 and preserve all new membership/evidence/audit records, and verify backup integrity.
 Use a rollback build that retains the exact embedded bytes/checksums of all applied
-migrations 0004–0008 but disables the new feature; an older binary missing any
+migrations 0004–0009 but disables the new feature; an older binary missing any
 applied migration will refuse the newer migration record. Alternatively restore the verified pre-migration backup to
 a separate database and reconcile all writes since the snapshot before switching.
 Never remove the recorded checksum to force an older binary to start. Owner approval
@@ -453,6 +465,12 @@ is reviewed. A prior main-branch CI pass does not prove a new branch or runtime.
   -timeout 180s ./agent ./server` passed on another fresh fixture, as did
   `go vet -p 2 ./agent ./server` and a Go build. Those earlier checks did not
   validate malformed skill metadata or establish team isolation.
+- After migration 0009, `go build -p 2 ./...`, `go vet -p 2 ./...`,
+  `go test -p 1 -count=1 -timeout 240s ./...`, and
+  `go test -race -p 1 -count=1 -timeout 240s ./db ./server` passed using fresh
+  synthetic PostgreSQL databases. The 0008-to-0009 upgrade preserved existing
+  assignments and tested denied reassignment, deletion and legacy-trigger escape;
+  these triggers are not protection from a database owner.
 - After adding the unmounted two-person scope routes and binding the OIDC
   resolver to the same database as the handler, `go build -p 2 ./...`,
   `go vet -p 2 ./...`, `go test -p 1 -count=1 -timeout 240s ./...`, and

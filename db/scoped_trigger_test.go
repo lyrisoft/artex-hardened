@@ -92,11 +92,12 @@ func TestScopedTriggerFiltersBeforeDisclosureAndRechecks(t *testing.T) {
 	if len(list(other, rw)) != 0 || len(list(principal, bw)) != 0 {
 		t.Fatal("cross-principal or cross-team event disclosed")
 	}
-	exec(`UPDATE security_scoped_trigger_bindings SET owner_membership_id=$2 WHERE trigger_id=$1`, tr.ID, otherMember)
-	if len(list(principal, rw)) != 0 {
-		t.Fatal("a membership belonging to another principal and team disclosed events")
+	if _, err := d.Exec(`UPDATE security_scoped_trigger_bindings SET owner_membership_id=$2 WHERE trigger_id=$1`, tr.ID, otherMember); err == nil {
+		t.Fatal("trigger ownership was reassigned to another principal and team")
 	}
-	exec(`UPDATE security_scoped_trigger_bindings SET owner_membership_id=$2 WHERE trigger_id=$1`, tr.ID, member)
+	if _, err := d.Exec(`DELETE FROM security_scoped_trigger_bindings WHERE trigger_id=$1`, tr.ID); err == nil {
+		t.Fatal("trigger binding was deleted, allowing legacy dispatch")
+	}
 	legacyEvents, err := d.NewToolCallsSince(0)
 	if err != nil {
 		t.Fatal(err)
@@ -126,9 +127,17 @@ func TestScopedTriggerFiltersBeforeDisclosureAndRechecks(t *testing.T) {
 	}
 	exec(`UPDATE security_team_memberships SET revoked_at=now() WHERE id=$1`, member)
 	member = id(`INSERT INTO security_team_memberships(team_id,principal_id,role) VALUES ($1,$2,'operator') RETURNING id`, red, principal)
-	exec(`UPDATE security_scoped_trigger_bindings SET owner_membership_id=$2 WHERE trigger_id=$1`, tr.ID, member)
+	if _, err := d.Exec(`UPDATE security_scoped_trigger_bindings SET owner_membership_id=$2 WHERE trigger_id=$1`, tr.ID, member); err == nil {
+		t.Fatal("old trigger was rebound to a new grant")
+	}
+	exec(`UPDATE security_scoped_trigger_bindings SET enabled=false WHERE trigger_id=$1`, tr.ID)
+	tr, err = d.CreateTrigger(&AgentTrigger{AgentKey: "scoped_red_fixture", Enabled: true, OnToolCall: true, ToolNames: []string{"scan"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec(`INSERT INTO security_scoped_trigger_bindings(trigger_id,workspace_id,principal_id,owner_membership_id,enabled) VALUES ($1,$2,$3,$4,true)`, tr.ID, rw, principal, member)
 	if len(list(principal, rw)) != 1 {
-		t.Fatal("explicitly rebound trigger did not use the new grant")
+		t.Fatal("new explicitly bound trigger did not use the new grant")
 	}
 	if old, err := d.ScopedToolEvents(ctx, principal, 1, rw, tr.ID, 0, 100); err != nil || len(old) != 0 {
 		t.Fatalf("stale service identity gained a rebound trigger: %+v err=%v", old, err)
