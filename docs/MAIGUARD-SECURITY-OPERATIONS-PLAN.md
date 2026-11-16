@@ -157,6 +157,11 @@ The program must close all of these paths before it claims isolation or enables 
   distinct team policy references). It does not launch, attest or isolate a real
   executor, verify an egress broker, or make a target safe. All execution remains
   legacy and shared-process until an owner-approved isolated executor is implemented.
+- Existing evidence-body reads now verify and return the same open file handle,
+  closing a path-replacement window between verification and delivery. The
+  verifier checks the expected length and hash and bounds its read. A process
+  that can write the same inode can still alter bytes after verification; this
+  does not replace independently controlled, tamper-evident evidence custody.
 - A disposable CI-only team guard fixture installs default-deny IPv4/IPv6 rules
   and exact private IPv4/TCP endpoint pairs in two separate network namespaces.
   Its live controls compare Red and Blue fixture access, unauthorized ports and
@@ -473,6 +478,12 @@ is reviewed. A prior main-branch CI pass does not prove a new branch or runtime.
   -timeout 180s ./agent ./server` passed on another fresh fixture, as did
   `go vet -p 2 ./agent ./server` and a Go build. Those earlier checks did not
   validate malformed skill metadata or establish team isolation.
+- After the evidence path-race fix, `go build -p 2 ./...`, `go vet -p 2
+  ./...`, `go test -p 1 -count=1 -timeout 240s ./...`, and `go test -race
+  -p 1 -count=1 -timeout 240s ./db ./evidence ./server` passed with fresh
+  synthetic PostgreSQL databases. Deterministic tests replaced a path between
+  verification and return and checked length and same-length corruption.
+  In-place writes to the verified inode remain outside this fix.
 - The disposable team-guard parser and fail-closed rule ordering passed four
   local Python unit tests; `bash -n scripts/test-team-egress-fixture.sh` passed,
   and its disposable-host acknowledgement denied an ordinary local invocation.
