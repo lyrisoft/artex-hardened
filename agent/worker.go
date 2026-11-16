@@ -425,8 +425,11 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// are kept as usual.
 	base = append(base, defaultToolsExcept("MultiEdit", "Glob", "Grep")...)
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts), IntentID: intent.ID})
-	tools, def, cleanup := AugmentTools(WithToolQuery(ctx, nodeSummary(intent)), "worker", base)
+	tools, def, cleanup, err := AugmentTools(WithToolQuery(ctx, nodeSummary(intent)), "worker", base)
 	defer cleanup()
+	if err != nil {
+		return harness.ReasonHookStopped, WriteCounts{}, err
+	}
 
 	// The intent is the worker's [sole duty, an invariant across the whole run] → it
 	// goes into the system prompt together with the launch instruction and the raw
@@ -540,6 +543,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	if hooks != nil { // typed-nil guard: only set when concrete (avoids harness panic)
 		opts.Hooks = hooks
 	}
+	opts.Hooks = withToolPolicyHooks("worker", def.toolResolve, opts.Hooks)
 	if w.tx != nil { // persist raw LLM conversation; one file per worked intent
 		opts.Transcript = w.tx
 		opts.SessionID = WorkerSessionID(ts.ID(), intent.ID)

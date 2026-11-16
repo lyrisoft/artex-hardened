@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,21 +41,41 @@ func hashPath(dir, hash string) (string, error) {
 	return filepath.Join(dir, "blobs", hash[:2], hash+".bin"), nil
 }
 
-func verifyFile(path, hash string, length int64) error {
-	f, err := os.Open(path)
+// verifyOpenFile checks and rewinds one already-open file. It is used for
+// existing on-disk blob checks; a later read needs its own integrity protection.
+func verifyOpenFile(f *os.File, hash string, length int64) error {
+	if f == nil || length < 0 || length == math.MaxInt64 {
+		return errors.New("invalid evidence body")
+	}
+	info, err := f.Stat()
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	if !info.Mode().IsRegular() || info.Size() != length {
+		return fmt.Errorf("evidence body verification failed: %s", hash)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
 	h := sha256.New()
-	n, err := io.Copy(h, f)
+	n, err := io.Copy(h, io.LimitReader(f, length+1))
 	if err != nil {
 		return err
 	}
 	if n != length || hex.EncodeToString(h.Sum(nil)) != hash {
 		return fmt.Errorf("evidence body verification failed: %s", hash)
 	}
-	return nil
+	_, err = f.Seek(0, io.SeekStart)
+	return err
+}
+
+func verifyFile(path, hash string, length int64) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return verifyOpenFile(f, hash, length)
 }
 
 // A new body becomes visible only after a durable write. Failed SQL commits may
@@ -233,7 +254,8 @@ func (s *Store) WithBinding(ctx context.Context, findingID, bindingID int64, fn 
 // large download (or a slow client) holding WithEvidenceTx would block every
 // evidence write process-wide. Reading the blob afterwards is safe — blobs are
 // content-addressed and GC only reaps unreferenced files after a 24h grace
-// period, and an already-open fd survives an unlink regardless.
+// period. OpenBody verifies the body and rechecks each private chunk before
+// returning bytes. Independent storage and metadata custody are still required.
 func (s *Store) Binding(ctx context.Context, findingID, bindingID int64) (db.FindingTrafficBinding, error) {
 	var out db.FindingTrafficBinding
 	err := s.WithBinding(ctx, findingID, bindingID, func(b db.FindingTrafficBinding) error {
@@ -244,7 +266,7 @@ func (s *Store) Binding(ctx context.Context, findingID, bindingID int64) (db.Fin
 }
 
 // OpenBody may be called without holding the evidence lock; see Binding.
-func (s *Store) OpenBody(snapshot db.TrafficEvidenceSnapshot, side string) (*os.File, int64, error) {
+func (s *Store) OpenBody(snapshot db.TrafficEvidenceSnapshot, side string) (*VerifiedBody, int64, error) {
 	hash, length := snapshot.ReqHash, snapshot.ReqLen
 	if side == "response" {
 		hash, length = snapshot.RespHash, snapshot.RespLen
@@ -255,11 +277,11 @@ func (s *Store) OpenBody(snapshot db.TrafficEvidenceSnapshot, side string) (*os.
 	if err != nil {
 		return nil, 0, err
 	}
-	if err = verifyFile(path, hash, length); err != nil {
+	f, err := openVerifiedBody(path, hash, length)
+	if err != nil {
 		return nil, 0, err
 	}
-	f, err := os.Open(path)
-	return f, length, err
+	return f, length, nil
 }
 
 // CopySnapshots is used by both report downloads and portable task archives.

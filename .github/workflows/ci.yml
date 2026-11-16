@@ -31,13 +31,9 @@ jobs:
           go-version-file: go.mod
       - run: go build ./...
       - run: go vet ./...
-      # Skipped tests, tracked in issue #9:
-      # - TestGraphOverviewExpandsAssociatedCompanyScope,
-      #   TestCaptureApprovalLifecycle: fail on unmodified upstream code with a
-      #   fresh database.
-      # - TestSideUsageRecordedOnceOnConsumerCancellation: concurrency/cancellation
-      #   test that passes locally but is timing-sensitive on 2-core CI runners.
-      # They now skip themselves in code (t.Skip with a pointer to the issue).
+      # Skipped test, tracked in BaaRai/ARTEX#9:
+      # TestSideUsageRecordedOnceOnConsumerCancellation passes locally but is
+      # timing-sensitive on 2-core CI runners; it skips itself in code.
       - name: go test
         # -p 1: package test suites share the single postgres service; running
         # them in parallel makes packages delete each other's rows (observed
@@ -55,7 +51,7 @@ jobs:
 
         run: >-
           go test -race -p 1 ./agent ./cmd/artex ./config ./db ./evidence ./guard
-          ./intercept ./llmpool ./llmrec ./mcphttp ./notify ./server ./sidequestion
+          ./intercept ./llmpool ./llmrec ./mcphttp ./notify ./security/fixtureexec ./security/oidclogin ./security/strictjson ./security/syntheticpolicy ./server ./sidequestion
           ./traffic
 
   shell:
@@ -65,7 +61,7 @@ jobs:
       # shellcheck is preinstalled on the ubuntu runners. -S warning: the scripts
       # currently have only info-level notes (intentional A && B || C chains in
       # update.sh, an unquoted glob in backup.sh's prune), so fail on warnings.
-      - run: shellcheck -S warning install.sh update.sh start.sh scripts/backup.sh reset-password.sh scripts/extract-changelog-section.sh scripts/test-extract-changelog-section.sh
+      - run: shellcheck -S warning install.sh update.sh start.sh scripts/backup.sh reset-password.sh scripts/extract-changelog-section.sh scripts/test-extract-changelog-section.sh scripts/test-runner-hardening.sh scripts/test-team-egress-fixture.sh
       - run: bash scripts/test-extract-changelog-section.sh
 
   web:

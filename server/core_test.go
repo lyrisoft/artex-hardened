@@ -23,6 +23,14 @@ func TestCoreTaskLifecyclePG(t *testing.T) {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
 	defer m.Close()
+	// This lifecycle fixture must never contact a real model or depend on a
+	// profile left by another test in the shared package database.
+	for _, key := range []string{"ARTEX_LLM_PROVIDER", "ARTEX_LLM_BASE_URL", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"} {
+		t.Setenv(key, "")
+	}
+	if _, err := m.pg.Exec(`UPDATE llm_profiles SET is_default=false WHERE is_default`); err != nil {
+		t.Fatalf("disable test-database model profile: %v", err)
+	}
 	td := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	s := New(ctx, m, td, td, td)

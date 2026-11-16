@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	actool "github.com/Autumn-27/norma/tool"
 )
 
 // hasSkillTool reports whether the packed tool set contains the Skill meta-tool.
@@ -34,7 +34,7 @@ func TestAssembleVisibleSkill(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer pg.Close()
+	t.Cleanup(func() { _ = pg.Close() })
 
 	// Filesystem skill fixture: <skillDir>/t-assemble/SKILL.md. The directory name
 	// (t-assemble) is the visibility key matched against AgentSkillNames.
@@ -62,10 +62,17 @@ func TestAssembleVisibleSkill(t *testing.T) {
 	if err := pg.SetAgentSkillVisibility(ag.ID, nil); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = pg.SetAgentSkillVisibility(ag.ID, orig) })
+	t.Cleanup(func() {
+		if err := pg.SetAgentSkillVisibility(ag.ID, orig); err != nil {
+			t.Errorf("restore skill visibility: %v", err)
+		}
+	})
 
 	// before: skill not visible → no Skill meta-tool
-	extra, _, cleanup := agent.ToolAugment()(context.Background(), "planner")
+	extra, _, cleanup, err := agent.ToolAugment()(context.Background(), "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
 	cleanup()
 	if hasSkillTool(extra) {
 		t.Fatalf("expected no Skill meta-tool before the skill is made visible")
@@ -75,18 +82,28 @@ func TestAssembleVisibleSkill(t *testing.T) {
 	if err := pg.ToggleSkillVisibility(ag.ID, skillName, true); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = pg.ToggleSkillVisibility(ag.ID, skillName, false) })
+	t.Cleanup(func() {
+		if err := pg.ToggleSkillVisibility(ag.ID, skillName, false); err != nil {
+			t.Errorf("remove fixture skill visibility: %v", err)
+		}
+	})
 
 	// after: the Skill meta-tool is packed in
-	extra, _, cleanup = agent.ToolAugment()(context.Background(), "planner")
+	extra, _, cleanup, err = agent.ToolAugment()(context.Background(), "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer cleanup()
 	if !hasSkillTool(extra) {
 		t.Fatalf("expected the Skill meta-tool after making the skill visible")
 	}
 
 	// AugmentTools appends extra to base without filtering base
-	combined, _, c2 := agent.AugmentTools(context.Background(), "planner", nil)
+	combined, _, c2, err := agent.AugmentTools(context.Background(), "planner", nil)
 	defer c2()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !hasSkillTool(combined) {
 		t.Fatalf("AugmentTools should surface the Skill meta-tool")
 	}

@@ -1,8 +1,10 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -95,7 +97,7 @@ func (d *DB) ListTriggersFor(agentKey string) ([]*AgentTrigger, error) {
 
 // ListEnabledTriggers returns all enabled triggers (for the scheduler).
 func (d *DB) ListEnabledTriggers() ([]*AgentTrigger, error) {
-	return d.queryTriggers(`SELECT ` + triggerCols + ` FROM agent_triggers WHERE enabled ORDER BY id`)
+	return d.queryTriggers(`SELECT ` + triggerCols + ` FROM agent_triggers WHERE enabled AND NOT EXISTS (SELECT 1 FROM security_scoped_trigger_bindings sb WHERE sb.trigger_id=agent_triggers.id) AND NOT EXISTS (SELECT 1 FROM agents a JOIN security_workspace_agents wa ON wa.agent_id=a.id WHERE a.key=agent_triggers.agent_key) ORDER BY id`)
 }
 
 func (d *DB) queryTriggers(q string, args ...any) ([]*AgentTrigger, error) {
@@ -169,6 +171,7 @@ func (d *DB) NewFindingsSince(lastID int64) ([]TaskEvent, error) {
 SELECT n.id, t.id, t.description, t.goal, n.payload
 FROM exploration_nodes n JOIN tasks t ON t.exploration_id = n.exploration_id
 WHERE n.kind='finding' AND n.id > $1 AND t.deleted_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM security_workspace_tasks wt WHERE wt.task_id=t.id)
 ORDER BY n.id`, lastID)
 	if err != nil {
 		return nil, err
@@ -193,9 +196,10 @@ ORDER BY n.id`, lastID)
 // ordered by id (monotonic watermark → no double-fire across restarts).
 func (d *DB) TimedOutTasksSince(lastID int64) ([]TaskEvent, error) {
 	rows, err := d.Query(`
-SELECT id, description, goal FROM tasks
-WHERE status='timeout' AND deleted_at IS NULL AND id > $1
-ORDER BY id`, lastID)
+SELECT t.id, t.description, t.goal FROM tasks t
+WHERE t.status='timeout' AND t.deleted_at IS NULL AND t.id > $1
+  AND NOT EXISTS (SELECT 1 FROM security_workspace_tasks wt WHERE wt.task_id=t.id)
+ORDER BY t.id`, lastID)
 	if err != nil {
 		return nil, err
 	}
@@ -218,9 +222,10 @@ ORDER BY id`, lastID)
 // agent runs are conversations, not tasks, so this never fires on its own output.
 func (d *DB) NewTasksSince(lastID int64) ([]TaskEvent, error) {
 	rows, err := d.Query(`
-SELECT id, description, goal FROM tasks
-WHERE deleted_at IS NULL AND id > $1
-ORDER BY id`, lastID)
+SELECT t.id, t.description, t.goal FROM tasks t
+WHERE t.deleted_at IS NULL AND t.id > $1
+  AND NOT EXISTS (SELECT 1 FROM security_workspace_tasks wt WHERE wt.task_id=t.id)
+ORDER BY t.id`, lastID)
 	if err != nil {
 		return nil, err
 	}
@@ -251,6 +256,7 @@ FROM activity r
 JOIN tasks t ON t.exploration_id = r.exploration_id
 LEFT JOIN activity u ON u.exploration_id = r.exploration_id AND u.tool_use_id = r.tool_use_id AND u.kind='tool_use'
 WHERE r.kind='tool_result' AND r.id > $1 AND r.tool <> '' AND t.deleted_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM security_workspace_tasks wt WHERE wt.task_id=t.id)
 ORDER BY r.id`, lastID)
 	if err != nil {
 		return nil, err
@@ -274,6 +280,7 @@ func (d *DB) MetGoals() ([]TaskEvent, error) {
 SELECT n.id, t.id, t.description, t.goal, n.payload
 FROM exploration_nodes n JOIN tasks t ON t.exploration_id = n.exploration_id
 WHERE n.kind='goal' AND n.state='met' AND t.deleted_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM security_workspace_tasks wt WHERE wt.task_id=t.id)
 ORDER BY n.id`)
 	if err != nil {
 		return nil, err
@@ -296,4 +303,47 @@ ORDER BY n.id`)
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// LegacyTriggerPermitted prevents the unscoped scheduler from delivering any
+// assigned agent or task. It is not an authorization for team execution. Team
+// dispatch stays inactive until a trusted principal, isolated executor and an
+// independently enforced target policy are available. Check at enqueue and again
+// immediately before use, including every source task of a merged run.
+func (d *DB) LegacyTriggerPermitted(ctx context.Context, agentKey string, taskIDs, triggerIDs []int64) (bool, error) {
+	if d == nil || d.DB == nil || agentKey == "" {
+		return false, errors.New("trigger policy unavailable")
+	}
+	for _, id := range taskIDs {
+		if id <= 0 {
+			return false, errors.New("invalid trigger task")
+		}
+	}
+	for _, id := range triggerIDs {
+		if id <= 0 {
+			return false, errors.New("invalid trigger ID")
+		}
+	}
+	if taskIDs == nil {
+		taskIDs = []int64{}
+	}
+	if triggerIDs == nil {
+		triggerIDs = []int64{}
+	}
+	var ok bool
+	err := d.QueryRowContext(ctx, `SELECT
+      NOT EXISTS (SELECT 1 FROM agents a JOIN security_workspace_agents wa ON wa.agent_id=a.id WHERE a.key=$1)
+      AND NOT EXISTS (
+        SELECT 1 FROM unnest($2::bigint[]) AS ids(id)
+        LEFT JOIN tasks t ON t.id=ids.id
+        WHERE t.id IS NULL OR t.deleted_at IS NOT NULL
+          OR EXISTS (SELECT 1 FROM security_workspace_tasks wt WHERE wt.task_id=ids.id)
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM unnest($3::bigint[]) AS ids(id)
+        LEFT JOIN agent_triggers tr ON tr.id=ids.id
+        WHERE tr.id IS NULL OR NOT tr.enabled OR tr.agent_key<>$1
+          OR EXISTS (SELECT 1 FROM security_scoped_trigger_bindings sb WHERE sb.trigger_id=ids.id)
+      )`, agentKey, taskIDs, triggerIDs).Scan(&ok)
+	return ok, err
 }

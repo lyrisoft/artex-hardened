@@ -102,11 +102,15 @@ func (s *Server) syncSSStatus(w http.ResponseWriter, r *http.Request) {
 	if configured && m.Enabled {
 		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 		defer cancel()
-		if cl, cerr := mcphttp.New(ctx, m.Name, m.URL, jsonStrMap(m.Env), m.Insecure, m.TimeoutSeconds); cerr == nil {
-			if _, terr := cl.Tools(ctx); terr == nil {
-				resp["reachable"] = true
+		// Status probes use the same explicit-request, catalog-availability and
+		// fresh-configuration checks as standalone discovery; the JWT is shared.
+		if current, checkErr := resolveMCPForDiscovery(ctx, s.m.pg, m.ID, true); checkErr == nil {
+			if cl, cerr := mcphttp.New(ctx, current.Name, current.URL, jsonStrMap(current.Env), current.Insecure, current.TimeoutSeconds); cerr == nil {
+				if _, terr := cl.Tools(ctx); terr == nil {
+					resp["reachable"] = true
+				}
+				_ = cl.Close()
 			}
-			_ = cl.Close()
 		}
 	}
 	writeJSON(w, 200, resp)
@@ -155,7 +159,7 @@ func (s *Server) syncSSDatasource(w http.ResponseWriter, r *http.Request) {
 	// Best-effort tool discovery so the status card shows tools right away.
 	if m.Enabled {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-		_ = s.discoverAndCacheMCP(ctx, m)
+		_ = s.discoverAndCacheMCP(ctx, m.ID, true)
 		cancel()
 	}
 	writeJSON(w, 200, map[string]any{"id": id, "enabled": m.Enabled})

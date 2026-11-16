@@ -96,7 +96,10 @@ func TestRecordFactSourceSchemaUpgrade(t *testing.T) {
 // serves it to the worker.
 func resolvedRecordFactProps(t *testing.T) map[string]any {
 	t.Helper()
-	tools := agent.ToolResolve()(context.Background(), "worker", agent.NewToolSet(nil, "").WorkerTools())
+	tools, err := agent.ToolResolve()(context.Background(), "worker", agent.NewToolSet(nil, "").WorkerTools())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tl := range tools {
 		if tl.Name() == "record_fact" {
 			props, _ := tl.InputSchema()["properties"].(map[string]any)

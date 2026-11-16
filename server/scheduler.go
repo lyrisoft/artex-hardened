@@ -16,8 +16,8 @@ import (
 // scans for new findings / newly-met goals (any task) to fire event triggers.
 // Each fire enqueues a NEW conversation on the agent's per-agent trigger queue
 // (StartTriggeredRun): fires for the same agent run one at a time in FIFO order,
-// distinct agents still run concurrently. State is persisted (per-trigger last_fire
-// + finding watermark + fired-goal set) so a restart resumes without double-firing.
+// distinct agents still run concurrently. Some watermarks are persisted, but the queue and watermarks are not transactional;
+// events can be lost or duplicated across failures. No exactly-once guarantee.
 // Triggers only attach to CUSTOM agents.
 type Scheduler struct {
 	s    *Server
@@ -143,7 +143,7 @@ func (sc *Scheduler) fireIntervals(triggers []*db.AgentTrigger) {
 		}
 		_ = sc.pg.TouchTriggerFire(tr.ID)
 		ctx := "\n\n[This run was triggered by the schedule]" + now.Format(" 2006-01-02 15:04:05 MST")
-		sc.s.StartTriggeredRun(tr.AgentKey, fmt.Sprintf("Scheduled trigger · %s", now.Format("15:04")), tr.IntervalMessage+ctx, 0, false, "", "")
+		sc.s.startTriggeredRun(tr.ID, tr.AgentKey, fmt.Sprintf("Scheduled trigger · %s", now.Format("15:04")), tr.IntervalMessage+ctx, 0, false, "", "")
 	}
 }
 
@@ -175,7 +175,7 @@ func (sc *Scheduler) fireFindings(triggers []*db.AgentTrigger) {
 		msgCtx := fmt.Sprintf("\n\n[This run was triggered by a task finding]\nFinding: [%s/%s] %s",
 			e.VulnClass, e.Severity, e.Summary)
 		for _, tr := range want {
-			sc.s.StartTriggeredRun(tr.AgentKey, fmt.Sprintf("Finding trigger · task#%d", e.TaskID), tr.FindingMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
+			sc.s.startTriggeredRun(tr.ID, tr.AgentKey, fmt.Sprintf("Finding trigger · task#%d", e.TaskID), tr.FindingMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
 		}
 	}
 	_ = sc.pg.SetSchedState(schedKeyLastFinding, strconv.FormatInt(maxID, 10))
@@ -208,7 +208,7 @@ func (sc *Scheduler) fireGoals(triggers []*db.AgentTrigger) {
 		}
 		msgCtx := fmt.Sprintf("\n\n[This run was triggered by a task goal completion]\nGoal met: %s", e.Summary)
 		for _, tr := range want {
-			sc.s.StartTriggeredRun(tr.AgentKey, fmt.Sprintf("Goal trigger · task#%d", e.TaskID), tr.GoalMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
+			sc.s.startTriggeredRun(tr.ID, tr.AgentKey, fmt.Sprintf("Goal trigger · task#%d", e.TaskID), tr.GoalMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
 		}
 	}
 	if changed {
@@ -241,7 +241,7 @@ func (sc *Scheduler) fireTaskTimeouts(triggers []*db.AgentTrigger) {
 		}
 		msgCtx := "\n\n[This run was triggered by a task timeout]"
 		for _, tr := range want {
-			sc.s.StartTriggeredRun(tr.AgentKey, fmt.Sprintf("Timeout trigger · task#%d", e.TaskID), tr.TaskTimeoutMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
+			sc.s.startTriggeredRun(tr.ID, tr.AgentKey, fmt.Sprintf("Timeout trigger · task#%d", e.TaskID), tr.TaskTimeoutMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
 		}
 	}
 	_ = sc.pg.SetSchedState(schedKeyLastTimeout, strconv.FormatInt(maxID, 10))
@@ -272,7 +272,7 @@ func (sc *Scheduler) fireTaskCreates(triggers []*db.AgentTrigger) {
 		}
 		msgCtx := "\n\n[This run was triggered by task creation]"
 		for _, tr := range want {
-			sc.s.StartTriggeredRun(tr.AgentKey, fmt.Sprintf("Task-create trigger · task#%d", e.TaskID), tr.TaskCreateMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
+			sc.s.startTriggeredRun(tr.ID, tr.AgentKey, fmt.Sprintf("Task-create trigger · task#%d", e.TaskID), tr.TaskCreateMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
 		}
 	}
 	_ = sc.pg.SetSchedState(schedKeyLastTaskCreate, strconv.FormatInt(maxID, 10))
@@ -317,7 +317,7 @@ func (sc *Scheduler) fireToolCalls(triggers []*db.AgentTrigger) {
 			if !containsFold(tr.ToolNames, e.Tool) {
 				continue
 			}
-			sc.s.StartTriggeredRun(tr.AgentKey, fmt.Sprintf("Tool trigger · %s · task#%d", e.Tool, e.TaskID), tr.ToolCallMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
+			sc.s.startTriggeredRun(tr.ID, tr.AgentKey, fmt.Sprintf("Tool trigger · %s · task#%d", e.Tool, e.TaskID), tr.ToolCallMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
 		}
 	}
 	_ = sc.pg.SetSchedState(schedKeyLastToolCall, strconv.FormatInt(maxID, 10))

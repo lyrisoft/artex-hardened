@@ -2,9 +2,9 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/mcphttp"
@@ -12,9 +12,14 @@ import (
 	actool "github.com/Autumn-27/norma/tool"
 )
 
-// mcpClient is the shared surface of a connected MCP server (stdio, Streamable HTTP,
-// or legacy SSE),
-// so tools/list and cleanup are handled uniformly regardless of transport.
+// legacyMCPRequestKey marks a request authenticated by the existing shared JWT.
+// It is not a unique human identity, team membership, or target approval.
+type legacyMCPRequestKey struct{}
+
+var errMCPDiscoveryDenied = errors.New("standalone MCP discovery unavailable")
+
+// mcpClient is the shared surface of a connected MCP server (stdio, Streamable
+// HTTP or legacy SSE), so tools/list and cleanup are handled uniformly.
 type mcpClient interface {
 	Tools(context.Context) ([]actool.CoreTool, error)
 	Close() error
@@ -32,7 +37,6 @@ func connectMCP(ctx context.Context, m *db.MCPServer) (mcpClient, error) {
 		if m.URL == "" {
 			return nil, fmt.Errorf("http transport is missing a URL")
 		}
-		// env map doubles as HTTP headers (e.g. Authorization).
 		return mcphttp.New(ctx, m.Name, m.URL, jsonStrMap(m.Env), m.Insecure, m.TimeoutSeconds)
 	case "sse":
 		if m.URL == "" {
@@ -44,50 +48,80 @@ func connectMCP(ctx context.Context, m *db.MCPServer) (mcpClient, error) {
 	}
 }
 
-// discoverAndCacheMCP connects to one MCP, lists its tools, and persists the tool
-// names to mcp_tools_cache so the UI shows them without a live connection.
-func (s *Server) discoverAndCacheMCP(ctx context.Context, m *db.MCPServer) error {
-	cl, err := connectMCP(ctx, m)
+type mcpDiscoveryStore interface {
+	CheckToolCatalog(context.Context) error
+	MCPByID(context.Context, int64) (*db.MCPServer, error)
+	UpdateMCPHealth(int64, bool, string) error
+	SaveMCPTools(int64, []db.MCPTool) error
+}
+
+// resolveMCPForDiscovery requires an explicit legacy-authenticated HTTP request,
+// checks catalog availability and reloads exactly the named MCP configuration.
+// The shared JWT and catalog check are not team authorization or isolation.
+// Future scoped principals need a separate action-specific authorization gate.
+func resolveMCPForDiscovery(ctx context.Context, store mcpDiscoveryStore, id int64, requireEnabled bool) (*db.MCPServer, error) {
+	if ctx == nil || store == nil || id <= 0 {
+		return nil, errMCPDiscoveryDenied
+	}
+	if ok, _ := ctx.Value(legacyMCPRequestKey{}).(bool); !ok {
+		return nil, errMCPDiscoveryDenied
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := store.CheckToolCatalog(ctx); err != nil {
+		return nil, fmt.Errorf("MCP discovery catalog unavailable: %w", err)
+	}
+	m, err := store.MCPByID(ctx, id)
 	if err != nil {
-		_ = s.m.pg.UpdateMCPHealth(m.ID, false, err.Error())
+		return nil, fmt.Errorf("load MCP for discovery: %w", err)
+	}
+	if m == nil || m.ID != id || (requireEnabled && !m.Enabled) {
+		return nil, errMCPDiscoveryDenied
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// discoverMCP connects only after resolveMCPForDiscovery succeeds. Enabled-on-save
+// discovery rechecks enabled; explicit refresh of a disabled legacy MCP remains
+// supported. A later configuration change cannot yet interrupt an active client.
+func discoverMCP(ctx context.Context, store mcpDiscoveryStore, id int64, requireEnabled bool, connect func(context.Context, *db.MCPServer) (mcpClient, error)) error {
+	if connect == nil {
+		return errMCPDiscoveryDenied
+	}
+	m, err := resolveMCPForDiscovery(ctx, store, id, requireEnabled)
+	if err != nil {
+		return err
+	}
+	cl, err := connect(ctx, m)
+	if err != nil {
+		_ = store.UpdateMCPHealth(id, false, err.Error())
 		return err
 	}
 	defer cl.Close()
 	ts, err := cl.Tools(ctx)
 	if err != nil {
-		_ = s.m.pg.UpdateMCPHealth(m.ID, false, err.Error())
+		_ = store.UpdateMCPHealth(id, false, err.Error())
 		return err
 	}
-	_ = s.m.pg.UpdateMCPHealth(m.ID, true, "")
+	_ = store.UpdateMCPHealth(id, true, "")
 	tools := make([]db.MCPTool, 0, len(ts))
 	for _, t := range ts {
 		tools = append(tools, db.MCPTool{Name: t.Name(), Description: t.Description()})
 	}
-	if err := s.m.pg.SaveMCPTools(m.ID, tools); err != nil {
+	if err := store.SaveMCPTools(id, tools); err != nil {
 		return err
 	}
 	log.Printf("[mcp] %s discovered %d tools and cached them", m.Name, len(tools))
 	return nil
 }
 
-// discoverEmptyMCPsOnStartup fills the tool cache for any enabled MCP that has none
-// yet (notably the seeded browser MCP on first run). Runs sequentially in one
-// goroutine so we never spawn many stdio servers (npx) at once, and never blocks
-// startup. Best-effort: a failure leaves the cache empty to retry next start.
-func (s *Server) discoverEmptyMCPsOnStartup() {
-	servers, err := s.m.pg.ListMCP()
-	if err != nil {
-		log.Printf("[mcp] startup auto-discovery: failed to read the list: %v", err)
-		return
+func (s *Server) discoverAndCacheMCP(ctx context.Context, id int64, requireEnabled bool) error {
+	if s == nil || s.m == nil || s.m.pg == nil {
+		return errMCPDiscoveryDenied
 	}
-	for _, m := range servers {
-		if !m.Enabled || len(m.Tools) > 0 {
-			continue
-		}
-		ctx, cancel := context.WithTimeout(s.ctx, 90*time.Second)
-		if err := s.discoverAndCacheMCP(ctx, m); err != nil {
-			log.Printf("[mcp] startup auto-discovery of %s failed: %v", m.Name, err)
-		}
-		cancel()
-	}
+	return discoverMCP(ctx, s.m.pg, id, requireEnabled, connectMCP)
 }

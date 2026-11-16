@@ -19,6 +19,37 @@ func TestSkillTools(t *testing.T) {
 	in, _ := json.Marshal(map[string]any{
 		"name": "my-skill", "description": "does X", "instructions": "## do\n1. a",
 	})
+	// Default and unacknowledged profiles must deny both creation and mutation
+	// without changing the filesystem. Acknowledged advanced-lab mode is used
+	// only below to exercise the legacy filesystem behavior in this temp dir.
+	existing := filepath.Join(dir, "existing")
+	if err := os.Mkdir(existing, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existingFile := filepath.Join(existing, "SKILL.md")
+	if err := os.WriteFile(existingFile, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	updateExisting, _ := json.Marshal(map[string]any{"name": "existing", "file": "SKILL.md", "content": "modified"})
+	for _, profile := range []string{"", "pentest", "research", "advanced-lab", "invalid"} {
+		t.Setenv("ARTEX_SECURITY_PROFILE", profile)
+		t.Setenv("ARTEX_ADVANCED_LAB_ACK", "")
+		if r, err := s.toolCreateSkill().Call(context.Background(), in, nil); err != nil || !r.IsError {
+			t.Fatalf("%s: create_skill must be denied: err=%v result=%+v", profile, err, r)
+		}
+		if r, err := s.toolUpdateSkillFile().Call(context.Background(), updateExisting, nil); err != nil || !r.IsError {
+			t.Fatalf("%s: update_skill_file must be denied: err=%v result=%+v", profile, err, r)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "my-skill")); !os.IsNotExist(err) {
+			t.Fatalf("%s: denied creation changed filesystem: %v", profile, err)
+		}
+		got, err := os.ReadFile(existingFile)
+		if err != nil || string(got) != "original" {
+			t.Fatalf("%s: denied update changed filesystem: %v %q", profile, err, got)
+		}
+	}
+	t.Setenv("ARTEX_SECURITY_PROFILE", "advanced-lab")
+	t.Setenv("ARTEX_ADVANCED_LAB_ACK", "I_UNDERSTAND_ISOLATED_LAB_ONLY")
 	res, err := s.toolCreateSkill().Call(context.Background(), in, nil)
 	if err != nil || res.IsError {
 		t.Fatalf("create_skill: err=%v result=%+v", err, res)

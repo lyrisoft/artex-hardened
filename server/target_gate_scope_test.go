@@ -4,6 +4,7 @@ import (
 	"context"
 	"iter"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -163,6 +164,18 @@ func newTargetScopeFixture(t *testing.T) *targetScopeFixture {
 	t.Cleanup(func() {
 		cancel()
 		_ = m.Close()
+	})
+	// This fixture builds a Server without New, so install a resolver backed by
+	// its own live database instead of inheriting a previous test's closed DB.
+	previousResolve := agent.ToolResolve()
+	previousPolicy := agent.FindingTrafficBindingEnabled()
+	previousAugment := agent.ToolAugment()
+	wireTools(m.pg, nil)
+	wireAgentAugment(m.pg, filepath.Join("..", "skills"), nil)
+	t.Cleanup(func() {
+		agent.SetToolResolve(previousResolve)
+		agent.SetFindingTrafficBindingEnabled(previousPolicy)
+		agent.SetToolAugment(previousAugment)
 	})
 	return &targetScopeFixture{m: m, e: e, s: s}
 }

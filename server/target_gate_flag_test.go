@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"iter"
 	"net/http/httptest"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -40,7 +41,7 @@ func newGateServer(t *testing.T) *gateServer {
 	t.Cleanup(func() { _ = m.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	s := New(ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
+	s := New(ctx, m, filepath.Join("..", "skills"), t.TempDir(), t.TempDir())
 	token, err := signJWT(s.jwtKey)
 	if err != nil {
 		t.Fatal(err)

@@ -92,18 +92,21 @@ func TestToolRAGNeverSelectsUnboundOrDisabled(t *testing.T) {
 	SetFindingTrafficBindingEnabled(nil)
 	t.Setenv(toolRAGEnv, "on")
 	t.Setenv(toolRAGTopKEnv, "2")
-	SetToolResolve(func(_ context.Context, _ string, in []actool.CoreTool) []actool.CoreTool {
+	SetToolResolve(func(_ context.Context, _ string, in []actool.CoreTool) ([]actool.CoreTool, error) {
 		var out []actool.CoreTool
 		for _, tool := range in {
 			if tool.Name() != "sql_injection_exploit" {
 				out = append(out, tool)
 			}
 		}
-		return out
+		return out, nil
 	})
 	base := append(ragCatalog(25), ragTool("sql_injection_exploit", "Exploit SQL injection in web login form", "url"))
-	out, _, cleanup := AugmentTools(WithToolQuery(t.Context(), ragQuery), "worker", base)
+	out, _, cleanup, err := AugmentTools(WithToolQuery(t.Context(), ragQuery), "worker", base)
 	defer cleanup()
+	if err != nil {
+		t.Fatal(err)
+	}
 	n := ragNames(out)
 	if slices.Contains(n, "sql_injection_exploit") {
 		t.Fatalf("unbound tool selected: %v", n)

@@ -911,6 +911,41 @@ func (d *DB) ListMCP() ([]*MCPServer, error) {
 	return out, nil
 }
 
+// MCPByID reads and decrypts only the requested MCP configuration. A nil result
+// means the row does not exist. This lookup alone does not authorize a connection.
+func (d *DB) MCPByID(ctx context.Context, id int64) (*MCPServer, error) {
+	if d == nil || d.DB == nil || id <= 0 {
+		return nil, errors.New("invalid MCP lookup")
+	}
+	var m MCPServer
+	var args, env []byte
+	err := d.QueryRowContext(ctx, `SELECT id,name,transport,COALESCE(command,''),args,env,COALESCE(url,''),enabled,insecure,COALESCE(timeout_seconds,120),last_connect_at,last_connect_ok,last_connect_err FROM mcp_servers WHERE id=$1`, id).
+		Scan(&m.ID, &m.Name, &m.Transport, &m.Command, &args, &env, &m.URL, &m.Enabled, &m.Insecure, &m.TimeoutSeconds, &m.LastConnectAt, &m.LastConnectOK, &m.LastConnectErr)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	plainEnv, err := openSecret(colMCPEnv, string(env))
+	if err != nil {
+		return nil, err
+	}
+	m.Args, m.Env = json.RawMessage(args), json.RawMessage(plainEnv)
+	return &m, nil
+}
+
+// CheckToolCatalog confirms the policy table can be read without decrypting
+// unrelated custom tool configurations. It is an availability check, not an
+// authorization decision for an MCP server or an agent.
+func (d *DB) CheckToolCatalog(ctx context.Context) error {
+	if d == nil || d.DB == nil {
+		return errors.New("tool catalog unavailable")
+	}
+	var exists bool
+	return d.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tools)`).Scan(&exists)
+}
+
 // MCPToolNames returns the cached tool names for a server (empty until discovered).
 func (d *DB) MCPToolNames(serverID int64) ([]string, error) {
 	rows, err := d.Query(`SELECT tool_name FROM mcp_tools_cache WHERE server_id=$1 ORDER BY tool_name`, serverID)

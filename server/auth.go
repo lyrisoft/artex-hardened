@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -230,7 +231,10 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 			writeErr(w, 401, "token is invalid or expired")
 			return
 		}
-		h.ServeHTTP(w, r)
+		// This marker means only that the legacy shared JWT was verified for an
+		// explicit HTTP request. It is not a human/service identity or team grant.
+		ctx := context.WithValue(r.Context(), legacyMCPRequestKey{}, true)
+		h.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
