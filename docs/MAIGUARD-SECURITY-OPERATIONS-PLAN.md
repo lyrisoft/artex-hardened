@@ -59,7 +59,7 @@ The program must close all of these paths before it claims isolation or enables 
 
 ### Phase 1 implementation checkpoint
 
-- Migrations 0004–0009 create inactive principal/workspace and scoped-trigger
+- Migrations 0004–0010 create inactive principal/workspace and scoped-trigger
   data, specialist/product catalogs and append-only synthetic-scope records. No
   principal, agent, trigger, credential or executor is enabled by these migrations.
   A lookup maps an already verified issuer, subject and kind to an enabled
@@ -144,6 +144,20 @@ The program must close all of these paths before it claims isolation or enables 
   remain incomplete.
   Migration 0007 preserves older unbound records but does not infer their grants;
   they remain unavailable to the new lookup until handled by an approved process.
+- Migration 0010 and an inactive reservation function provide one durable live
+  fixture reservation per database. It rechecks a Red requester's approved scope,
+  a service membership, principal generations, decision digest and a supplied
+  endpoint inventory. A live reservation remains occupied after expiry; the
+  state machine requires a stopped transition before another can be admitted.
+  The reserved-to-running transition rechecks scope revocation, expiry, principal
+  generations, memberships and workspace/task status; it cannot interrupt an
+  already-running process or attest the supervisor.
+  Blue reservations deny by default, and Purple retests remain unimplemented.
+  The inventory source is not authenticated here, no service credential is yet
+  verified, and no runner, API or scheduler uses this ledger. A future separately
+  trusted supervisor and restricted DB roles must attest process termination;
+  a DB owner can bypass these triggers. This is neither an execution grant nor
+  an exactly-once delivery mechanism.
 - The legacy scheduler excludes assigned tasks, agents and bound triggers from its
   global queries, retains source IDs through queue merges and rechecks before a
   legacy run. These checks are not atomic with runtime execution or data migration.
@@ -315,7 +329,9 @@ ordinary team/workspace reassignment, deletion of identity and grant history,
 assignment movement, and removal or reassignment of trigger bindings. A disabled
 trigger can be replaced by a separately authorized new trigger; transfers need a
 future independently controlled procedure. These migrations add no live bindings
-or scopes during migration.
+or scopes during migration. `0010_inactive_run_reservations.sql` adds an empty,
+single-live-slot ledger; it never auto-releases a reservation on expiry. No code
+in this branch starts a process or establishes a trusted stop attestation.
 On a disposable copy, verify the pre-migration backup, record its checksum and the
 applied migration checksums, upgrade, check legacy evidence/graphs, and run the
 negative membership and authorization suite before enabling any future feature.
@@ -358,7 +374,7 @@ Existing legacy execution has not been changed by this inactive schema.
 For a rollback rehearsal, stop admission and drain/terminate isolated leases, export
 and preserve all new membership/evidence/audit records, and verify backup integrity.
 Use a rollback build that retains the exact embedded bytes/checksums of all applied
-migrations 0004–0009 but disables the new feature; an older binary missing any
+migrations 0004–0010 but disables the new feature; an older binary missing any
 applied migration will refuse the newer migration record. Alternatively restore the verified pre-migration backup to
 a separate database and reconcile all writes since the snapshot before switching.
 Never remove the recorded checksum to force an older binary to start. Owner approval
@@ -444,6 +460,16 @@ is reviewed. A prior main-branch CI pass does not prove a new branch or runtime.
 
 ## Validation record
 
+- After migration 0010, `go build -p 2 ./...`, `go vet -p 2 ./...`, and
+  `go test -p 1 -count=1 -timeout 240s ./...` passed against a fresh loopback-only
+  synthetic PostgreSQL instance. The focused database regression also passed under
+  `go test -race -p 1 -count=1 -timeout 180s ./db` for migration, ownership and
+  reservation tests; `go test -race -p 1 -count=1 -timeout 240s ./db
+  ./evidence ./server` passed against a second fresh fixture. Twelve concurrent
+  attempts admitted one reservation; expiry,
+  scope revocation and stale service grants did not authorize starting a run.
+  These tests simulate supervisor state transitions in SQL; they do not start or
+  stop an isolated process, authenticate inventory or prove independent custody.
 - After migration 0007, targeted PostgreSQL tests passed under `go test -race`
   for unbound-record upgrade, membership revocation/regrant, scope approval and
   scoped-trigger filtering. A 30-second parser fuzz run passed with 41,138 inputs;
